@@ -200,3 +200,6 @@ atlassian-ide-plugin.xml
 
 # Editor-based Rest Client
 .idea/httpRequests
+
+# OS stuff
+.DS_Store
