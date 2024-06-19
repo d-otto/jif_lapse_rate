@@ -1,5 +1,6 @@
 # Project specific
 data/external/*.tif
+*.tif
 data/external/*/**
 **/scratch
 

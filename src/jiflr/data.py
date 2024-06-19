@@ -10,10 +10,13 @@ Project: jif_lapse_rate
 """
 
 import pandas as pd
+import geopandas as gpd
 import numpy as np
 import xarray as xr
 from pathlib import Path
 from tqdm import tqdm
+
+from jiflr import ROOT
 
 #%%
 
@@ -160,3 +163,12 @@ def read_hobo_pendants(ps: list[Path], sensor_as_var=False):
             mfds = xr.concat([mfds, ds], dim='sensor_id', combine_attrs="drop")
         
     return mfds
+
+#%%
+
+def read_rgi(product: str, v=7):
+    product = product.upper()
+    p = Path(ROOT, f"data/external/rgi7/RGI2000-v7.0-{product}-01_alaska")
+    rgi = gpd.read_file(p)
+
+    return rgi
