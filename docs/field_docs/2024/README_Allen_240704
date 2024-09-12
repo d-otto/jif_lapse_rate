@@ -1,0 +1,66 @@
+Hello Allen! I hope you had an enjoyable traverse despite the wet weather.
+
+I have some additional information for you.
+
+1. You can direct InReach messages to drotto@uw.edu or (661) 309-5397.
+
+2. A potentially useful resource: I've included a copy of the mass balance folder that Chris gave to Francis.
+ In the `glacier-mass-balance-code` folder, there is a `data` folder, containing folders for each benchmark glacier + Taku.
+ These contain a variety of information that might be useful for your activities, including adjusted point balances (which can also be read with a python function) and degree day factors calibrated for particular pits.
+ There is also `SubSeasonal_Glaciological_Data` which might be helpful for planning your activity (and the data from it could be passed along to Chris to add to that file)
+ Some also contain estimates of `bw`, which I am assuming are estimated using the degree-day factors and/or Juneau precipitation records (hence `precipitation_ratio` files).
+ I don't have information of what all the files are or how they are generated (though that can presumably be brute-force understood by reading the code), but you/I can always ask Chris if there are questions.
+ 
+
+3. I did the analysis to get a rough estimate of the post-pit melt. 
+Essentially I took the annual balance, converted it to snow depth, and subtracted it from the pit depth. 
+So these results rely on the USGS melt factors/lapse rates. 
+If you want to dig into that information further, a good start would be looking at `JIRP_MASSBALANCE_2024/JIRP-Mass-Balance/glacier-mass-balance-code/data/Taku/Output/Output_Taku_Adjusted_Point_Balances`.
+It's hard to say whether this will be a higher or lower melt year, but you might be able to get a sense of it with the pit depths so far.
+The NOAA seasonal forecast forecasts even chances for higher/lower temperatures than average.
+It forecasts a slightly higher chance of above average precipitation.
+To summarize the results: above 1500 m, the median post-pit melt is under 1 m.
+Sites below 1200 m have a median post-pit melt of 2 or more meters.
+Looking at specific sites, the ones which seem to have the highest risk of melting out are the ones in front of C10.
+One solution to this is putting stakes on Taku A and B. 
+Another interesting solution would be to drill the stake hole at the bottom of the mass balance pits.
+The resulting bias might be worth it, but I don't have a sense for how long it would be until the data are reliable. 
+My guess is that wouldn't happen until after the end of the melt season.
+Filling in the pit would help, and might result in reliable data in a month or so?
+If you go that route, I'd suggest also using some of the old pendants to put a stake on Taku A and/or B so that there is some reliable data from that area regardless.
+I put a report containing plots in this folder that will hopefully be helpful for making decisions about specific sites.
+
+
+4. As you suggested, I made a map of proposed stake locations and assigned them a priority level.
+This was really helpful!
+More pieces are fitting together mentally, and I'm developing a better sense of what combinations of locations might be more useful for analysis. 
+Most of the locations I'm suggesting coincide with mass balance pits, though there are a few additions. 
+Points are either: i) on the primary transect along the traverse path, ii) stradling a significant topographic feature, or iii) to investigate whether points along the primary transect are representative. 
+Locations in the last category vary one "facet" (e.g., elevation, margin vs. centerline, glacier branch/basin) of the primary stake but are otherwise meant to be approximately equivalent. 
+Additionally, there are many pairs of stakes which we can reasonably expect to have similar amounts of cloud cover.
+For these, the new pendant on top of poles can be substituted for an old pendant (probably shielded?) to ensure there are enough of the new pendants for their improved light sensors to be distributed strategically. 
+My thought is to save the new light sensors for camps (to compliment the microstations) and stakes on the primary transect where we expect qualitative changes in cloud cover. 
+Examples I'm envisioning are scenarios like Lemon Creek vs. SW Branch Taku, or either side of the ice divide. 
+The points and priorities are available as a KMZ that can be loaded into CalTopo as well as a spreadsheet. I've put an image of the points overlaid on a map into the lapse rate manual. 
+Lastly, I want to emphasize again that these locations/priorities are very much a first pass, and you should make modifications as you and the students see fit!
+https://caltopo.com/m/J020G2H 
+
+
+5. Lastly, I'm including some stuff for the field computer that may be useful. First is the executable installer for the software to interface with the iButtons.
+### TODO
+ Second is an updated version of the `jiflr` git repository. There is another README that has instructions what to do with this. Finally, there is a Docker image to use for analysis with python. I don't know how familiar you are with Docker so forgive me, but the gist of it is that this "image" is a self-contained pre-configured python installation. "Docker Desktop" is already installed on the machine, and there is yet another README with instructions on how to use the image with VSCode/Jupyter Notebooks.
+### END TODO 
+Though, you did allude to doing the preliminary analysis in Excel, which is an option I had overlooked. I imagine Excel will actually be able to cover most of the preliminary analysis/visualization needs without having to mess with python/docker. I'm giving you all of that in case you/the students are eager to dive into analysis with python, but by all means roll with whatever works. I've included a Excel cheatsheet (and, unrealted, the handheld GPS manual) in case it is helpful.
+
+
+6. In case you have an enthusiastic group of students, it might be worth brainstorming a bit about B3 project for the purpose of an AGU abstract. I'm planning on drafting one in advance that generally focuses on the large-scale maritime-continental transition, but if there is a clear direction for the student projects I can tailor it towards that. I believe Lindsay was thinking about encouraging some project related to katabatic jet height/extent? Perhaps worth thinking about if you get that far. Let me know if you want t
+
+I hope all is well up there and the students haven't had to put on damp socks too many times. I was joking with the B1 faculty that it is only only barely facetious to say that learning to be "warm while wet" is a key component of the JIRP cirriculum. I was almost worried after the unusually nice weather at C17, but it sounds like everyone can probably check that one off now.
+
+P.S. I found out a couple days ago that the proposal Mira, Jess, and I submitted to UW Program on Climate Change was funded for the maximum amount of $30k! So it looks like we will have a chance to come back next spring to add some additional coverage.
+
+
+
+
+ 
+ 
