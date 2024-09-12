@@ -6,24 +6,16 @@ USER sermilik
 WORKDIR /home/sermilik
 
 # PETSC_ARCH inherited from firedrakeproject/firedrake
-
-# Install an iPython kernel for firedrake
-RUN bash -c ". /home/firedrake/firedrake/bin/activate && pip install nbclassic nbformat nbconvert ipympl"
-RUN bash -c ". /home/firedrake/firedrake/bin/activate && jupyter nbclassic --generate-config"
-
-# Remove the install log.
-RUN bash -c "rm firedrake-*"
-# Put the notebooks in the working directory for the notebook server.
-RUN bash -c "cp -r firedrake/src/firedrake/docs/notebooks/* ."
-# Strip the output from the notebooks.
-RUN bash -c '. /home/firedrake/firedrake/bin/activate && for file in *.ipynb; do jupyter nbconvert --ClearOutputPreprocessor.enabled=True --inplace $file; done'
-
 # Environment required for Azure deployments.
 ENV OMPI_MCA_btl tcp,self
 ENV PATH /home/firedrake/firedrake/bin:$PATH
 
 # install other packages
 # todo: make this point to requirements.txt
-RUN bash -c ". /home/firedrake/firedrake/bin/activate && pip install geopandas xdem shapely"
+RUN bash -c "python3 -m pip install dill"
+RUN bash -c "python3 -m pip install geopandas shapely rasterio meshpy"
+RUN bash -c "python3 -m pip install numpy pandas scipy scikit-learn statsmodels"
+RUN bash -c "python3 -m pip install matplotlib seaborn cartopy"
+RUN bash -c "python3 -m pip install xarray metpy xdem xarray-spatial rioxarray"
 
-CMD ["/home/firedrake/firedrake/bin/jupyter", "nbclassic", "--ip", "0.0.0.0", "--no-browser", "--allow-root"]
+CMD ["/home/firedrake/firedrake/bin/jupyter", "lab", "--ip", "0.0.0.0", "--no-browser", "--allow-root"]]

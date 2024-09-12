@@ -3,6 +3,7 @@ data/external/*.tif
 *.tif
 data/external/*/**
 **/scratch
+docker/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -210,4 +211,3 @@ atlassian-ide-plugin.xml
 
 # OS stuff
 .DS_Store
-

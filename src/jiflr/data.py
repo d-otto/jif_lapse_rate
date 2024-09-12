@@ -13,10 +13,16 @@ import pandas as pd
 import geopandas as gpd
 import numpy as np
 import xarray as xr
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+import seaborn as sns
 from pathlib import Path
 from tqdm import tqdm
+import scipy as sci
 
 from jiflr import ROOT
+
+plt.style.use('default')
 
 #%%
 
@@ -172,3 +178,5 @@ def read_rgi(product: str, v=7):
     rgi = gpd.read_file(p)
 
     return rgi
+
+#%%
