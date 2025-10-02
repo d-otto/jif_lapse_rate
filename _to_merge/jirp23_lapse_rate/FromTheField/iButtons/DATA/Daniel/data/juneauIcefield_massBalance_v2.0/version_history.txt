@@ -1,0 +1,17 @@
+________________________________________________________
+
+Version History for "Glacier-Wide Mass Balance and Compiled Data Inputs: Juneau Icefield Glaciers"
+________________________________________________________
+Current Citation
+
+McNeil, C. J., Campbell, S. W., O'Neel, S., and Baker, E. H., 2019, Glacier-wide mass balance and compiled data inputs: Juneau Icefield glaciers, (ver. 2.0, November 2020): U.S. Geological Survey data release, https://doi.org/10.5066/P9YBZ36F
+________________________________________________________
+
+Version 1.0 posted online November 2019
+
+________________________________________________________
+Version 2.0 revised and reposted online March, 2021
+
+1. Addition of finalized mass balance data for 2019, and provisional data for 2020.
+
+2. Relocation of primary Lemon Creek Glacier dataset with -5.0 C/km lapse rate to the "Glacier-Wide Mass Balance and Compiled Data Inputs: USGS Benchmark Glaciers" data release, available at https://doi.org/10.5066/F7HD7SRF. 
