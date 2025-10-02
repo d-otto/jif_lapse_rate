@@ -4,6 +4,7 @@ data/external/*.tif
 data/external/*/**
 **/scratch
 docker/
+api_keys.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
