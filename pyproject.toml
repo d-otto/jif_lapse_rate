@@ -15,6 +15,12 @@ dependencies = [
     "tqdm",
     "pandas",
     "dill",
+    "dask[complete]",
+    "zarr>=2.16.1",
+    "cfgrib",
+    "jupyter>=1.1.1",
+    "pip>=25.0.1",
+    "cartopy>=0.21.1",
 ]
 
 [build-system]
@@ -26,3 +32,8 @@ where = ["src/"]
 
 [tool.pytest.ini_options]
 pythonpath = "src/"
+
+[tool.uv.workspace]
+members = [
+    "jiflr",
+]
