@@ -31,7 +31,10 @@ from jiflr.utils import get_deployment_periods
 
 def merge_site_data(site_data_dict):
     """
-    Merge multiple sensor datasets for a site into a single dataset.
+    Merge multiple sensor datasets for a site into a single dataset using sensor_idx concatenation.
+    
+    Uses sensor_idx structure with sensor attributes as coordinates.
+    Creates structure: data_vars(sensor_idx, datetime)
 
     Parameters
     ----------
@@ -39,79 +42,99 @@ def merge_site_data(site_data_dict):
         Dictionary with sensor height as keys and sensor info as values
         (output from load_all_pendant_data for a single site)
         Note: deployment masks should already be applied during data loading
+        Note: All input datasets MUST already have sensor_idx structure
 
     Returns
     -------
     xarray.Dataset
-        Combined dataset with sensor_height as coordinate
+        Combined dataset with sensor_idx structure
     """
-    datasets = []
-    sensor_heights = []
-
-    for height, sensor_info in site_data_dict.items():
-        ds = sensor_info["dataset"].copy()
-
-        # Round datetime coordinates to nearest minute for consistent time alignment
-        rounded_datetime = ds.datetime.dt.round("min")
-        ds = ds.assign_coords(datetime=rounded_datetime)
-
-        # Remove any duplicates created by rounding (keep first occurrence)
-        datetime_values = ds.datetime.values
-        u, indices, counts = np.unique(
-            datetime_values, return_inverse=True, return_counts=True
-        )
-        if np.any(counts > 1):
-            # Keep only the first occurrence of each unique datetime
-            first_occurrence_mask = np.zeros(len(datetime_values), dtype=bool)
-            first_occurrence_mask[np.unique(indices, return_index=True)[1]] = True
-            ds = ds.isel(datetime=first_occurrence_mask)
-
-        # Preserve sensor metadata in attributes
-        ds.attrs.update(
-            {
-                f"sensor_id_{height}": sensor_info["sensor_id"],
-                f"sensor_file_{height}": sensor_info.get("file", "unknown"),
-            }
-        )
-
-        datasets.append(ds)
-        sensor_heights.append(height)
-
-    if not datasets:
+    if not site_data_dict:
         return None
-
-    # Instead of concat, use merge to handle misaligned time coordinates
-    # First create a common time grid by finding the union of all time points
-    all_times = []
-    for ds in datasets:
-        all_times.extend(ds.datetime.values)
-
-    # Get unique sorted times
-    unique_times = np.unique(sorted(set(all_times)))
-
-    # Create a new combined dataset by reindexing each dataset to the common time grid
-    reindexed_datasets = []
-    for ds, height in zip(datasets, sensor_heights):
-        # Reindex to common time grid
-        ds_reindexed = ds.reindex(datetime=unique_times, method=None)
-        reindexed_datasets.append(ds_reindexed)
-
-    # Now concatenate along height dimension (all have same time grid)
-    combined_ds = xr.concat(reindexed_datasets, dim="height")
-
-    # Update global attributes
-    first_sensor = list(site_data_dict.values())[0]
-    combined_ds.attrs.update(
-        {
-            "site_name": first_sensor["site_name"],
-            "sensor_type": "hobo pendant",
-            "processing_step": "site_combined",
-            "sensor_heights": ", ".join(sensor_heights),
-            "n_sensors": len(datasets),
-        }
-    )
-
+    
+    # Collect all datasets to concatenate
+    datasets_to_concat = []
+    site_name = None
+    
+    for height_key, sensor_info in site_data_dict.items():
+        ds = sensor_info["dataset"]
+        
+        # Track site name
+        if site_name is None:
+            site_name = sensor_info.get("site_name", "unknown")
+        
+        # Verify the dataset has the correct sensor_idx structure
+        if "sensor_idx" not in ds.dims:
+            raise ValueError(f"Dataset for sensor at {height_key} does not have sensor_idx structure. "
+                           f"All intermediate data must be regenerated with the new structure.")
+        
+        datasets_to_concat.append(ds)
+    
+    if not datasets_to_concat:
+        return None
+    
+    # Concatenate all datasets along sensor_idx dimension
+    try:
+        combined_ds = xr.concat(datasets_to_concat, dim="sensor_idx", data_vars='all', coords='all')
+        # Fix sensor_idx to be sequential (0, 1, 2, 3...) instead of all zeros
+        new_sensor_idx = list(range(len(combined_ds.sensor_idx)))
+        combined_ds = combined_ds.assign_coords(sensor_idx=new_sensor_idx)
+    except Exception as e:
+        raise ValueError(f"Error concatenating datasets with sensor_idx structure: {e}")
+    
+    # Add global attributes
+    combined_ds.attrs.update({
+        "site_name": site_name,
+        "sensor_type": "hobo pendant",
+        "processing_step": "site_combined_sensor_idx", 
+        "n_sensors": len(combined_ds.sensor_idx),
+        "structure": "sensor_idx × datetime"
+    })
+    
     return combined_ds
+
+
+def _extract_height_from_sensor(ds, height_key):
+    """
+    Extract height information from sensor dataset, handling various sources.
+    
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Sensor dataset
+    height_key : str
+        Height key from the site_data_dict (fallback)
+    
+    Returns
+    -------
+    str
+        Standardized height string
+    """
+    # Try sensor_height attribute first
+    height = ds.attrs.get("sensor_height", "").strip()
+    
+    # If empty, try sensor_config
+    if not height:
+        height = ds.attrs.get("sensor_config", "").strip()
+    
+    # If still empty, use the height_key from dictionary
+    if not height:
+        height = height_key
+    
+    # Standardize height format
+    if height and not height.endswith('m'):
+        # Handle cases like "0.5", "2", etc.
+        try:
+            height_num = float(height.replace('m', ''))
+            if height_num == int(height_num):
+                height = f"{int(height_num)}m"
+            else:
+                height = f"{height_num}m"
+        except (ValueError, TypeError):
+            # Keep as-is if can't parse
+            pass
+    
+    return height if height else "unknown"
 
 
 def create_qc_plots(combined_ds, site_name, output_dir, deployment_periods=None):
@@ -121,7 +144,7 @@ def create_qc_plots(combined_ds, site_name, output_dir, deployment_periods=None)
     Parameters
     ----------
     combined_ds : xarray.Dataset
-        Combined dataset for the site with dimensions (height, datetime)
+        Combined dataset with dimensions (sensor_idx, datetime)
     site_name : str
         Name of the site for plot titles and filename
     output_dir : Path
@@ -146,13 +169,37 @@ def create_qc_plots(combined_ds, site_name, output_dir, deployment_periods=None)
     ax2 = fig.add_subplot(gs[1, 0])  # Bottom left
     ax4 = fig.add_subplot(gs[1, 1])  # Bottom right
 
-    # Extract data
+    # Extract data - now using sensor_idx structure
     temp_data = combined_ds["temp_c"]
-    datetime_coords = combined_ds["datetime"]
-    height_coords = combined_ds["height"]
-
-    # Color map for different heights
-    colors = plt.cm.Set1(np.linspace(0, 1, len(height_coords)))
+    
+    # Get the appropriate datetime coordinate
+    if "datetime" in combined_ds.coords:
+        datetime_coords = combined_ds["datetime"]
+    elif "datetime_utc" in combined_ds.coords:
+        datetime_coords = combined_ds["datetime_utc"]
+    else:
+        print(f"Warning: No datetime coordinate found for site {site_name}")
+        return
+    
+    # Get sensor metadata from coordinates
+    n_sensors = len(combined_ds.sensor_idx)
+    sensor_info = []
+    
+    for i in range(n_sensors):
+        height = combined_ds.height.values[i] if "height" in combined_ds.coords else f"sensor_{i}"
+        shielding = combined_ds.shielding.values[i] if "shielding" in combined_ds.coords else "unknown"
+        sensor_id = combined_ds.sensor_id.values[i] if "sensor_id" in combined_ds.coords else f"unknown_{i}"
+        
+        sensor_info.append({
+            'height': height,
+            'shielding': shielding,
+            'sensor_id': sensor_id,
+            'index': i,
+            'label': f"{height} ({shielding})"
+        })
+    
+    # Color map for different sensors
+    colors = plt.cm.Set1(np.linspace(0, 1, max(n_sensors, 1)))
 
     # Get deployment periods for this site using standardized function
     site_deployment_periods = []
@@ -189,21 +236,78 @@ def create_qc_plots(combined_ds, site_name, output_dir, deployment_periods=None)
             )
             site_deployment_periods = []
 
-    # Plot 1: Time series of temperature by height (full width)
-    # ax1 already defined above
-    for i, height in enumerate(height_coords.values):
-        height_data = temp_data.sel(height=height)
+    # Plot 1: Time series of temperature by sensor (full width)
+    for i, sensor in enumerate(sensor_info):
+        # Select data for this sensor
+        sensor_data = temp_data.isel(sensor_idx=sensor['index'])
+        label = sensor['label']
+        
+        # Get the time series values
+        sensor_values = sensor_data.values
+        
         # Only plot non-NaN values
-        valid_mask = ~np.isnan(height_data.values)
+        valid_mask = ~np.isnan(sensor_values)
         if np.any(valid_mask):
+            valid_times = datetime_coords.values[valid_mask]
+            valid_data = sensor_values[valid_mask]
+                
             ax1.plot(
-                datetime_coords[valid_mask],
-                height_data.values[valid_mask],
+                valid_times,
+                valid_data,
                 color=colors[i],
-                label=f"{height}",
+                label=label,
                 alpha=0.7,
                 linewidth=1,
             )
+
+    # Check if light data is available and add to second y-axis
+    if "intensity_lux" in combined_ds.data_vars:
+        # Create second y-axis for light data
+        ax1_light = ax1.twinx()
+        
+        light_data = combined_ds["intensity_lux"]
+        # Use dashed lines and lighter colors for light data
+        light_colors = plt.cm.Set2(np.linspace(0, 1, max(n_sensors, 1)))
+        
+        for i, sensor in enumerate(sensor_info):
+            # Select light data for this sensor
+            sensor_light = light_data.isel(sensor_idx=sensor['index'])
+            light_label = f"{sensor['label']} light"
+            
+            # Get the time series values
+            sensor_light_values = sensor_light.values
+                
+            # Only plot non-NaN values
+            valid_mask = ~np.isnan(sensor_light_values)
+            if np.any(valid_mask):
+                valid_times = datetime_coords.values[valid_mask]
+                valid_light = sensor_light_values[valid_mask]
+                    
+                ax1_light.plot(
+                    valid_times,
+                    valid_light,
+                    color=light_colors[i],
+                    label=light_label,
+                    alpha=0.6,
+                    linewidth=1,
+                    linestyle='--',
+                )
+        
+        ax1_light.set_ylabel("Light Intensity (lux)", color='orange')
+        ax1_light.tick_params(axis='y', labelcolor='orange')
+        
+        # Create combined legend for both axes
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax1_light.get_legend_handles_labels()
+        
+        # Only create light legend if there's light data
+        if lines2:
+            ax1.legend(lines1 + lines2, labels1 + labels2, 
+                      title="Height/Shielding (temp/light)", bbox_to_anchor=(1.05, 1), loc="upper left")
+        else:
+            ax1.legend(title="Height/Shielding", bbox_to_anchor=(1.05, 1), loc="upper left")
+    else:
+        ax1.legend(title="Height/Shielding", bbox_to_anchor=(1.05, 1), loc="upper left")
 
     # Add deployment period shading to time series plot
     if site_deployment_periods:
@@ -221,34 +325,40 @@ def create_qc_plots(combined_ds, site_name, output_dir, deployment_periods=None)
     ax1.set_xlabel("Date")
     ax1.set_ylabel("Temperature (°C)")
     ax1.set_title("Temperature Time Series by Height")
-    ax1.legend(title="Height", bbox_to_anchor=(1.05, 1), loc="upper left")
     ax1.grid(True, alpha=0.3)
     ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
     ax1.xaxis.set_major_locator(mdates.DayLocator())
     plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
 
-    # Plot 2: Temperature distribution by height (box plot)
-    # ax2 already defined above
+    # Plot 2: Temperature distribution by sensor (box plot)
     temp_data_for_box = []
-    height_labels = []
-    for height in height_coords.values:
-        height_data = temp_data.sel(height=height).values
-        # Remove NaN values
-        height_data_clean = height_data[~np.isnan(height_data)]
-        if len(height_data_clean) > 0:
-            temp_data_for_box.append(height_data_clean)
-            height_labels.append(str(height))
+    sensor_labels = []
+    
+    for i, sensor in enumerate(sensor_info):
+        # Select data for this sensor
+        sensor_data = temp_data.isel(sensor_idx=sensor['index'])
+        label = f"{sensor['height']}\n({sensor['shielding']})"
+        
+        # Get values and remove NaN
+        sensor_values = sensor_data.values
+        sensor_data_clean = sensor_values[~np.isnan(sensor_values)]
+        
+        if len(sensor_data_clean) > 0:
+            temp_data_for_box.append(sensor_data_clean)
+            sensor_labels.append(label)
 
     if temp_data_for_box:
-        bp = ax2.boxplot(temp_data_for_box, labels=height_labels, patch_artist=True)
+        bp = ax2.boxplot(temp_data_for_box, labels=sensor_labels, patch_artist=True)
         for patch, color in zip(bp["boxes"], colors[: len(temp_data_for_box)]):
             patch.set_facecolor(color)
             patch.set_alpha(0.7)
 
-    ax2.set_xlabel("Height")
+    ax2.set_xlabel("Height/Shielding")
     ax2.set_ylabel("Temperature (°C)")
-    ax2.set_title("Temperature Distribution by Height")
+    ax2.set_title("Temperature Distribution by Height and Shielding")
     ax2.grid(True, alpha=0.3)
+    # Rotate labels if needed for better readability
+    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
 
     # Plot 3: Summary statistics
     # ax4 already defined above
@@ -257,8 +367,12 @@ def create_qc_plots(combined_ds, site_name, output_dir, deployment_periods=None)
     # Calculate summary statistics
     stats_text = f"Site {site_name} - Data Summary\n"
     stats_text += "=" * 30 + "\n\n"
-    stats_text += f"Number of sensors: {len(height_coords)}\n"
-    stats_text += f"Heights: {', '.join([str(h) for h in height_coords.values])}\n"
+    stats_text += f"Number of sensors: {n_sensors}\n"
+    unique_heights = sorted(set([s['height'] for s in sensor_info]))
+    unique_shielding = sorted(set([s['shielding'] for s in sensor_info]))
+    stats_text += f"Heights: {', '.join([str(h) for h in unique_heights])}\n"
+    stats_text += f"Shielding types: {', '.join([str(s) for s in unique_shielding])}\n"
+    
     stats_text += (
         f"Data period: {datetime_coords.values[0]} to {datetime_coords.values[-1]}\n"
     )
@@ -279,22 +393,52 @@ def create_qc_plots(combined_ds, site_name, output_dir, deployment_periods=None)
     else:
         stats_text += "No deployment periods found\n\n"
 
-    stats_text += "Temperature Statistics by Height:\n"
+    stats_text += "Temperature Statistics by Sensor:\n"
     stats_text += "-" * 35 + "\n"
 
-    for height in height_coords.values:
-        height_data = temp_data.sel(height=height).values
-        valid_data = height_data[~np.isnan(height_data)]
+    for sensor in sensor_info:
+        # Select data for this sensor
+        sensor_data = temp_data.isel(sensor_idx=sensor['index'])
+        sensor_label = sensor['label']
+        
+        # Get values and calculate statistics
+        sensor_values = sensor_data.values
+        valid_data = sensor_values[~np.isnan(sensor_values)]
 
         if len(valid_data) > 0:
-            coverage = len(valid_data) / len(height_data) * 100
-            stats_text += f"{height}:\n"
+            coverage = len(valid_data) / len(sensor_values) * 100
+            stats_text += f"{sensor_label} (ID: {sensor['sensor_id']}):\n"
             stats_text += f"  Coverage: {coverage:.1f}%\n"
             stats_text += f"  Mean: {np.mean(valid_data):.2f}°C\n"
             stats_text += (
                 f"  Range: {np.min(valid_data):.2f} to {np.max(valid_data):.2f}°C\n"
             )
             stats_text += f"  Std: {np.std(valid_data):.2f}°C\n\n"
+
+    # Add light data statistics if available
+    if "intensity_lux" in combined_ds.data_vars:
+        light_data = combined_ds["intensity_lux"]
+        stats_text += "Light Intensity Statistics by Sensor:\n"
+        stats_text += "-" * 38 + "\n"
+
+        for sensor in sensor_info:
+            # Select light data for this sensor
+            sensor_light = light_data.isel(sensor_idx=sensor['index'])
+            sensor_label = sensor['label']
+            
+            # Get values and calculate statistics
+            sensor_light_values = sensor_light.values
+            valid_light = sensor_light_values[~np.isnan(sensor_light_values)]
+
+            if len(valid_light) > 0:
+                coverage = len(valid_light) / len(sensor_light_values) * 100
+                stats_text += f"{sensor_label} (ID: {sensor['sensor_id']}):\n"
+                stats_text += f"  Coverage: {coverage:.1f}%\n"
+                stats_text += f"  Mean: {np.mean(valid_light):.1f} lux\n"
+                stats_text += (
+                    f"  Range: {np.min(valid_light):.1f} to {np.max(valid_light):.1f} lux\n"
+                )
+                stats_text += f"  Std: {np.std(valid_light):.1f} lux\n\n"
 
     ax4.text(
         0.05,
@@ -378,11 +522,12 @@ def process_directory(input_dir, output_dir, csv_deployment_path):
         create_qc_plots(combined_ds, site_name, output_dir, deployment_periods)
 
         # Print summary
-        n_sensors = len(sensors)
-        heights = list(sensors.keys())
-        data_points = len(combined_ds.datetime) if "datetime" in combined_ds.dims else 0
+        n_sensors = len(combined_ds.sensor_idx) if "sensor_idx" in combined_ds.dims else 0
+        datetime_coord = "datetime" if "datetime" in combined_ds.dims else "datetime_utc"
+        data_points = len(combined_ds[datetime_coord]) if datetime_coord in combined_ds.dims else 0
+        sensor_heights = [combined_ds.height.values[i] for i in range(n_sensors)] if "height" in combined_ds.coords else []
         print(
-            f"    Combined {n_sensors} sensors ({', '.join(heights)}) -> {data_points} time points"
+            f"    Combined {n_sensors} sensors ({', '.join(sensor_heights)}) -> {data_points} time points"
         )
 
 

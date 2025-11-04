@@ -27,6 +27,7 @@ def main(
     convert_to_local_tz: bool = True,
     utc_offset_hours: float = -9.0,
     data_inventory_path: Union[str, Path, None] = None,
+    deployment_metadata_path: Union[str, Path, None] = None,
 ) -> None:
     """
     Process raw HOBO pendant CSV files to NetCDF format.
@@ -52,6 +53,10 @@ def main(
         If True, convert from UTC storage to local timezone (default: True).
     utc_offset_hours : float, optional
         UTC offset in hours for local timezone conversion (default: -9.0 for AKST).
+    data_inventory_path : Union[str, Path, None], optional
+        Path to data inventory Excel file containing shielding information (default: None).
+    deployment_metadata_path : Union[str, Path, None], optional
+        Path to deployment_periods.csv file containing site elevations and coordinates (default: None).
 
     Returns
     -------
@@ -65,12 +70,24 @@ def main(
     'output_base_dir/site2/' respectively.
     """
 
+    # Convert paths to Path objects
+    raw_dir = Path(raw_dir)
+    output_base_dir = Path(output_base_dir)
+    if data_inventory_path:
+        data_inventory_path = Path(data_inventory_path)
+    if deployment_metadata_path:
+        deployment_metadata_path = Path(deployment_metadata_path)
+
     print("=" * 60)
     print("HOBO Pendant Data Processing")
     print("=" * 60)
     print(f"Year: {year}")
     print(f"Raw export directory: {raw_dir}")
     print(f"Output base directory: {output_base_dir}")
+    if data_inventory_path:
+        print(f"Data inventory: {data_inventory_path}")
+    if deployment_metadata_path:
+        print(f"Deployment metadata: {deployment_metadata_path}")
     print()
 
     # Find all subdirectories plus the root directory
@@ -114,6 +131,8 @@ def main(
             output_dir,
             convert_to_local_tz=convert_to_local_tz,
             utc_offset_hours=utc_offset_hours,
+            data_inventory_path=data_inventory_path,
+            deployment_metadata_path=deployment_metadata_path,
         )
 
         # Count output files
@@ -152,5 +171,9 @@ if __name__ == "__main__":
     output_base_dir = (
         Path(ROOT) / "data" / year / "intermediate" / "pendants" / "by_sensor"
     )
+    data_inventory_path = Path(ROOT) / "data" / year / "metadata" / "data_inventory.xlsx"
+    deployment_metadata_path = Path(ROOT) / "data" / year / "metadata" / "deployment_periods.csv"
 
-    main(raw_dir, output_base_dir, year="2025", force=True)
+    main(raw_dir, output_base_dir, year="2025", force=True, 
+         data_inventory_path=data_inventory_path,
+         deployment_metadata_path=deployment_metadata_path)

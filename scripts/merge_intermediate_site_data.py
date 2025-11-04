@@ -21,45 +21,91 @@ from pathlib import Path
 from tqdm import tqdm
 
 from jiflr import ROOT
+import numpy as np
 
 
-def merge_two_datasets(ds1, ds2):
+def _fix_string_coordinate_lengths(ds, other_ds):
     """
-    Merge two xarray datasets by finding the union of their datetime coordinates,
-    reindexing both to the common grid, then concatenating along site_id.
+    Fix string coordinate lengths to prevent truncation during concatenation.
     
     Parameters
     ----------
-    ds1, ds2 : xarray.Dataset
-        Datasets to merge
+    ds : xarray.Dataset
+        Dataset to fix
+    other_ds : xarray.Dataset
+        Other dataset to compare string lengths with
         
     Returns
     -------
     xarray.Dataset
-        Merged dataset with common datetime grid and concatenated site_id
+        Dataset with fixed string coordinate lengths
     """
-    # Get all unique datetime values from both datasets
-    all_times = []
-    if 'datetime' in ds1.dims:
-        all_times.extend(ds1.datetime.values)
-    if 'datetime' in ds2.dims:
-        all_times.extend(ds2.datetime.values)
+    # Identify string coordinates
+    string_coords = []
+    for coord_name in ds.coords:
+        if coord_name != 'sensor_idx' and ds[coord_name].dtype.kind in ['U', 'S']:
+            string_coords.append(coord_name)
     
-    if not all_times:
-        raise ValueError("No datetime coordinate found in datasets")
+    if not string_coords:
+        return ds
     
-    # Create common time grid
-    unique_times = pd.to_datetime(sorted(set(all_times)))
+    # Calculate maximum string length needed for each coordinate
+    coord_updates = {}
+    for coord_name in string_coords:
+        if coord_name in other_ds.coords:
+            # Get max length from both datasets
+            max_len_ds = max(len(str(val)) for val in ds[coord_name].values)
+            max_len_other = max(len(str(val)) for val in other_ds[coord_name].values)
+            max_len = max(max_len_ds, max_len_other, 10)  # Minimum 10 chars
+        else:
+            # Just use current dataset
+            max_len = max(max(len(str(val)) for val in ds[coord_name].values), 10)
+        
+        # Create new coordinate with adequate string length
+        current_values = ds[coord_name].values
+        new_dtype = f'U{max_len}'
+        new_values = np.array(current_values, dtype=new_dtype)
+        coord_updates[coord_name] = (ds[coord_name].dims, new_values)
     
-    # Reindex both datasets to common time grid
-    ds1_reindexed = ds1.reindex(datetime=unique_times, method=None)
-    ds2_reindexed = ds2.reindex(datetime=unique_times, method=None)
+    if coord_updates:
+        ds = ds.assign_coords(coord_updates)
     
-    # Concatenate along site_id dimension
-    # Note: site_id should be a coordinate in the site-level files
-    merged = xr.concat([ds1_reindexed, ds2_reindexed], dim='site_id')
+    return ds
+
+
+def merge_two_datasets(ds1, ds2):
+    """
+    Merge two xarray datasets with sensor_idx structure by concatenating along sensor_idx dimension.
     
-    return merged
+    Parameters
+    ----------
+    ds1, ds2 : xarray.Dataset
+        Datasets to merge (must have sensor_idx structure)
+        
+    Returns
+    -------
+    xarray.Dataset
+        Merged dataset concatenated along sensor_idx dimension
+    """
+    # Verify both datasets have sensor_idx structure
+    if 'sensor_idx' not in ds1.dims:
+        raise ValueError("Dataset 1 does not have sensor_idx structure")
+    if 'sensor_idx' not in ds2.dims:
+        raise ValueError("Dataset 2 does not have sensor_idx structure")
+    
+    # Fix string coordinate truncation by ensuring adequate string lengths
+    ds1_fixed = _fix_string_coordinate_lengths(ds1, ds2)
+    ds2_fixed = _fix_string_coordinate_lengths(ds2, ds1)
+    
+    # Simply concatenate along sensor_idx dimension - much simpler!
+    try:
+        merged_ds = xr.concat([ds1_fixed, ds2_fixed], dim='sensor_idx', data_vars='all', coords='all')
+        # Fix sensor_idx to be sequential (0, 1, 2, 3...) instead of all zeros
+        new_sensor_idx = list(range(len(merged_ds.sensor_idx)))
+        merged_ds = merged_ds.assign_coords(sensor_idx=new_sensor_idx)
+        return merged_ds
+    except Exception as e:
+        raise ValueError(f"Failed to concatenate datasets along sensor_idx: {e}")
 
 
 def tree_merge_datasets(datasets):
@@ -149,9 +195,16 @@ def process_directory(input_dir, output_file):
         return
     
     # Add site_id coordinate to each dataset if not present
+    # Calculate maximum site name length to prevent truncation
+    max_site_name_len = max(len(name) for name in site_names) if site_names else 10
+    max_site_name_len = max(max_site_name_len, 10)  # Minimum 10 characters
+    
     for i, (ds, site_name) in enumerate(zip(datasets, site_names)):
         if 'site_id' not in ds.coords:
-            datasets[i] = ds.assign_coords(site_id=site_name)
+            # Create site_id coordinate with adequate string length
+            site_id_dtype = f'U{max_site_name_len}'
+            site_id_values = np.array([site_name] * len(ds.sensor_idx), dtype=site_id_dtype)
+            datasets[i] = ds.assign_coords(site_id=('sensor_idx', site_id_values))
     
     # Merge all datasets using tree approach
     print(f"  Merging {len(datasets)} datasets using tree approach...")
@@ -161,12 +214,14 @@ def process_directory(input_dir, output_file):
         print(f"  Failed to merge datasets from {input_dir}")
         return
     
-    # Update global attributes
+    # Update global attributes for sensor_idx structure
     merged_ds.attrs.update({
-        'processing_step': 'site_merged_lvl0',
+        'processing_step': 'site_merged_lvl0_sensor_idx',
         'source_directory': str(input_dir),
         'n_sites': len(datasets),
-        'site_names': ', '.join(site_names)
+        'n_sensors': len(merged_ds.sensor_idx) if 'sensor_idx' in merged_ds.dims else 0,
+        'site_names': ', '.join(site_names),
+        'structure': 'sensor_idx × datetime'
     })
     
     # Ensure output directory exists
@@ -178,8 +233,10 @@ def process_directory(input_dir, output_file):
     
     # Print summary
     n_sites = len(site_names)
-    n_times = len(merged_ds.datetime) if 'datetime' in merged_ds.dims else 0
-    print(f"  Successfully merged {n_sites} sites -> {n_times} time points")
+    n_sensors = len(merged_ds.sensor_idx) if 'sensor_idx' in merged_ds.dims else 0
+    datetime_coord = 'datetime' if 'datetime' in merged_ds.dims else 'datetime_utc'
+    n_times = len(merged_ds[datetime_coord]) if datetime_coord in merged_ds.dims else 0
+    print(f"  Successfully merged {n_sites} sites ({n_sensors} sensors) -> {n_times} time points")
     
     # Close datasets to free memory
     for ds in datasets:

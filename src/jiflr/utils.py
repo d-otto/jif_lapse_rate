@@ -445,8 +445,116 @@ def _plot_deployment_detection(
     plt.tight_layout()
 
 
+def butterworth_filter(
+    data: np.ndarray,
+    fs: float,
+    order: int = 4,
+    lower: Optional[float] = None,
+    upper: Optional[float] = None
+) -> np.ndarray:
+    """
+    Apply Butterworth filter to data using zero-phase filtering.
+
+    This function provides low-pass, high-pass, or band-pass filtering using
+    a Butterworth filter design. It uses second-order sections (SOS) for
+    numerical stability and sosfiltfilt for zero-phase distortion.
+    
+    NOTE: This does not account for the shift in cutoff frequency from filtfilt.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        1D array of data to filter
+    fs : float
+        Sampling frequency in Hz (e.g., for 5-minute data: fs = 1/300)
+    order : int, default 4
+        Filter order (higher = steeper roll-off)
+    lower : float, optional
+        Lower cutoff frequency in Hz (None for low-pass filter)
+        For band-pass, this is the lower cutoff
+    upper : float, optional
+        Upper cutoff frequency in Hz (None for high-pass filter)
+        For band-pass, this is the upper cutoff
+
+    Returns
+    -------
+    np.ndarray
+        Filtered data with same shape as input
+
+    Notes
+    -----
+    - Cutoff frequencies are specified in Hz (cycles per second)
+    - For time-series with irregular sampling, resample to regular intervals first
+    - Uses sosfiltfilt for zero-phase filtering (no time shift)
+    - For 5-minute data (300 seconds), fs = 1/300 Hz
+    - Example: upper=1/6 with 5-min data means 6 samples = 30 minutes cutoff
+
+    Examples
+    --------
+    >>> # Low-pass filter: remove fluctuations faster than 30 minutes
+    >>> # For 5-minute data: fs = 1/300 Hz, upper = 1/6 samples = 30 min period
+    >>> filtered = butterworth_filter(data, fs=1/300, order=4, upper=1/6)
+
+    >>> # High-pass filter: remove slow trends
+    >>> filtered = butterworth_filter(data, fs=1/300, order=4, lower=1/100)
+
+    >>> # Band-pass filter
+    >>> filtered = butterworth_filter(data, fs=1/300, order=4, lower=1/100, upper=1/6)
+    """
+    # Validate inputs
+    if lower is None and upper is None:
+        raise ValueError("Must specify at least one of 'lower' or 'upper' cutoff frequency")
+
+    # Handle NaN values
+    data_copy = data.copy()
+    nan_mask = np.isnan(data_copy)
+
+    if np.all(nan_mask):
+        warnings.warn("All data values are NaN, returning input unchanged")
+        return data_copy
+
+    # If there are some NaNs, interpolate them for filtering
+    # (sosfiltfilt cannot handle NaN values)
+    if np.any(nan_mask):
+        valid_indices = np.where(~nan_mask)[0]
+        data_interpolated = np.interp(
+            np.arange(len(data_copy)),
+            valid_indices,
+            data_copy[valid_indices]
+        )
+    else:
+        data_interpolated = data_copy
+
+    # Determine filter type and design filter
+    if lower is None:
+        # Low-pass filter
+        btype = 'low'
+        Wn = upper
+    elif upper is None:
+        # High-pass filter
+        btype = 'high'
+        Wn = lower
+    else:
+        # Band-pass filter
+        btype = 'band'
+        Wn = [lower, upper]
+
+    # Design Butterworth filter using second-order sections (SOS)
+    # SOS is more numerically stable than transfer function (b, a)
+    sos = signal.butter(order, Wn, btype=btype, fs=fs, output='sos')
+
+    # Apply zero-phase filtering (forward and backward pass)
+    filtered_data = signal.sosfiltfilt(sos, data_interpolated)
+
+    # Restore NaN values at their original positions
+    if np.any(nan_mask):
+        filtered_data[nan_mask] = np.nan
+
+    return filtered_data
+
+
 def get_deployment_periods(
-    site_id: Union[str, List[str]], 
+    site_id: Union[str, List[str]],
     csv_path: Union[str, Path]
 ) -> Dict[str, List[Tuple[pd.Timestamp, pd.Timestamp]]]:
     """

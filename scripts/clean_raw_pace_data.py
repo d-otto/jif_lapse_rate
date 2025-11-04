@@ -10,17 +10,16 @@ with CF-compliant metadata.
 from pathlib import Path
 import sys
 
-# Add the src directory to Python path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
-
+from jiflr import ROOT
 from jiflr.data import clean_pace_loggers
 
 def main():
     """Process all raw Pace logger files."""
     
-    # Define paths
-    raw_data_dir = Path(__file__).parent / "data" / "2025" / "raw" / "pace"
-    output_dir = Path(__file__).parent / "data" / "2025" / "intermediate" / "pace"
+    # Define paths using ROOT from jiflr
+    raw_data_dir = ROOT / "data" / "2025" / "raw" / "pace"
+    output_dir = ROOT / "data" / "2025" / "intermediate" / "pace"
+    deployment_metadata_path = ROOT / "data" / "2025" / "metadata" / "deployment_periods.csv"
     
     # Create output directory if it doesn't exist
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -40,10 +39,12 @@ def main():
     print(f"\nProcessing files...")
     print(f"Input directory: {raw_data_dir}")
     print(f"Output directory: {output_dir}")
+    print(f"Deployment metadata: {deployment_metadata_path}")
     
     try:
         # Process all files
-        clean_pace_loggers(pace_files, output_dir, convert_to_local_tz=False)
+        clean_pace_loggers(pace_files, output_dir, convert_to_local_tz=False, 
+                          deployment_metadata_path=deployment_metadata_path)
         
         print("\n✓ Successfully processed all Pace logger files!")
         

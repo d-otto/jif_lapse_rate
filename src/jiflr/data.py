@@ -31,12 +31,41 @@ from jiflr.utils import get_deployment_periods, filter_by_deployment_periods
 plt.style.use("default")
 
 
+# Site groupings for analysis
+SITE_GROUPS = {
+    "all_except_B": [
+        "A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08", "A10",
+        "C02", 
+        "D01", "D02", "D04",
+        "E01", "E03", "E04",
+        "F03", "F05", "F06",
+        "G01", "G02", "G03", "G04"
+    ],
+    "D_and_E": [
+        "D01", "D02", "D04",
+        "E01", "E03", "E04"
+    ],
+    "A_and_intensive": [
+        "A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08", "A10",
+        "22038776", "22038777", "22038778", "22038779", "22038781",
+        "22133649", "22133654", "22133658", "22133662"
+    ],
+    "G_and_A02": [
+        "G01", "G02", "G03", "G04", "A02"
+    ],
+    "F_and_Windward1": [
+        "F03", "F05", "F06", "Windward1"
+    ]
+}
+
+
 def clean_hobo_pendants(
     ps: list[Path] | Path,
     dir_out: Path,
     convert_to_local_tz: bool = False,
     utc_offset_hours: float = -9.0,
     data_inventory_path: Optional[Path] = None,
+    deployment_metadata_path: Optional[Path] = None,
 ):
     """
     Reads data exported from HOBOware and HOBOconnect and outputs it as netcdf.
@@ -53,6 +82,8 @@ def clean_hobo_pendants(
         UTC offset in hours for local timezone conversion (default: -9.0 for AKST)
     data_inventory_path : Path, optional
         Path to data inventory Excel file containing shielding information
+    deployment_metadata_path : Path, optional
+        Path to deployment_periods.csv file containing site elevations, coordinates
     """
 
     # make sure ps is always a list
@@ -65,14 +96,43 @@ def clean_hobo_pendants(
         try:
             import pandas as pd
             inventory_df = pd.read_excel(data_inventory_path)
-            # Create mapping from sensor_id to shielding status
-            if 'sensor_id' in inventory_df.columns and 'shielding' in inventory_df.columns:
-                for _, row in inventory_df.iterrows():
-                    sensor_id = str(row['sensor_id'])
-                    shielding = row['shielding']
-                    if pd.notna(shielding) and str(shielding).lower() == 'unshielded':
+            
+            # Melt the inventory to make it tidy - each sensor gets its own row
+            sn_columns = [col for col in inventory_df.columns if 'SN' in col]
+            
+            # Also look for height-based sensor columns (current data inventory format)
+            height_based_cols = [col for col in inventory_df.columns 
+                               if col in ['2m_unshielded', '2m', '1m', '0m_unshielded']]
+            
+            # Combine all sensor columns
+            all_sensor_cols = sn_columns + height_based_cols
+            
+            if all_sensor_cols and 'site_id' in inventory_df.columns:
+                id_vars = ['site_id']
+                
+                # Melt all sensor columns
+                melted = inventory_df.melt(
+                    id_vars=id_vars, 
+                    value_vars=all_sensor_cols,
+                    var_name='sensor_type', 
+                    value_name='sensor_id'
+                )
+                
+                # Remove rows with missing sensor IDs
+                melted = melted.dropna(subset=['sensor_id'])
+                melted['sensor_id'] = melted['sensor_id'].astype(int).astype(str)
+                
+                # Determine shielding status for each sensor
+                for _, row in melted.iterrows():
+                    sensor_id = row['sensor_id']
+                    sensor_type = row['sensor_type']
+                    
+                    # If the sensor comes from an unshielded column, it's unshielded
+                    if 'unshielded' in sensor_type:
                         shielding_info[sensor_id] = 'unshielded'
-                    # All other sensors default to 'shielded'
+                    else:
+                        shielding_info[sensor_id] = 'shielded'
+                        
         except Exception as e:
             warnings.warn(f"Could not load data inventory: {e}")
 
@@ -87,10 +147,10 @@ def clean_hobo_pendants(
 
         filename_parts = p.name.split(" ")
         if len(filename_parts) >= 2:
-            # Check if first part looks like a site name (e.g., A01, B03, C17)
-            if re.match(r"^[A-Z]\d+$", filename_parts[0]) or re.match(
-                r"^[A-Z]+\d*$", filename_parts[0]
-            ):
+            # Check if first part looks like a site name (e.g., A01, B03, C17, Lee1, Lee2, Divide, Windward1)
+            if (re.match(r"^[A-Z]\d+$", filename_parts[0]) or 
+                re.match(r"^[A-Z]+\d*$", filename_parts[0]) or
+                filename_parts[0] in ["Lee1", "Lee2", "Divide", "Windward1", "Windward2"]):
                 site_name = filename_parts[0]
                 # Check for height/configuration in second part
                 if filename_parts[1] in ["1m", "2m"]:
@@ -102,6 +162,13 @@ def clean_hobo_pendants(
                 else:
                     # Try to capture any other configuration info
                     sensor_config = filename_parts[1]
+                    
+            # Handle multi-part processing for patterns like "Lee2 2m unshielded"
+            if len(filename_parts) >= 3:
+                # Check if we have height and config info
+                if filename_parts[1] in ["1m", "2m"] and filename_parts[2] == "unshielded":
+                    sensor_height = filename_parts[1]
+                    sensor_config = "unshielded"
 
         # Second read: get actual data with proper column headers
         df = pd.read_csv(p)
@@ -157,7 +224,7 @@ def clean_hobo_pendants(
         # Find light column
         light_col = None
         for col in df.columns:
-            if "light" in col.lower() or f"#{sn}" in col:
+            if col.startswith("Intensity"):
                 light_col = col
                 break
 
@@ -236,11 +303,41 @@ def clean_hobo_pendants(
             .dt.tz_localize(None)  # Remove timezone info, keeping UTC time
         )
 
-        # Convert to xarray Dataset
+        # Convert to xarray Dataset using sensor_idx structure
         ds = xr.Dataset.from_dataframe(df_clean.set_index("datetime_utc"))
 
         # Get shielding status for this sensor (default to 'shielded')
         shielding_status = shielding_info.get(sn, "shielded")
+
+        # Create sensor_idx dimension (single sensor = index 0)
+        sensor_idx = 0
+        
+        # Expand all data variables to include sensor_idx dimension
+        data_vars_with_sensor_idx = {}
+        for var_name, var_data in ds.data_vars.items():
+            # Add sensor_idx as first dimension: (sensor_idx, datetime)
+            expanded_data = var_data.expand_dims('sensor_idx', axis=0)
+            data_vars_with_sensor_idx[var_name] = expanded_data
+        
+        # Create new dataset with sensor_idx structure
+        ds = xr.Dataset(
+            data_vars_with_sensor_idx,
+            coords={
+                'sensor_idx': [sensor_idx],
+                'datetime_utc': ds.datetime_utc,
+                # Sensor attributes as coordinates indexed by sensor_idx
+                'sensor_id': ('sensor_idx', [sn]),
+                'site_id': ('sensor_idx', [site_name if site_name else ""]),
+                'height': ('sensor_idx', [sensor_height if sensor_height else (sensor_config if sensor_config else "")]),
+                'shielding': ('sensor_idx', [shielding_status]),
+                'sensor_type': ('sensor_idx', ["hobo pendant"]),
+                'sensor_generation': ('sensor_idx', [sensor_generation]),
+                # Placeholder coordinates for spatial data (to be filled from deployment metadata)
+                'elevation': ('sensor_idx', [np.nan]),
+                'latitude': ('sensor_idx', [np.nan]),
+                'longitude': ('sensor_idx', [np.nan]),
+            }
+        )
 
         # Add metadata
         attr_dict = {
@@ -253,21 +350,8 @@ def clean_hobo_pendants(
             "sensor_height": sensor_height if sensor_height else "",
             "sensor_config": sensor_config if sensor_config else "",
             "shielding": shielding_status,
+            "structure": "sensor_idx × datetime",
         }
-
-        ds.coords["sensor_id"] = sn
-
-        # Add site metadata as scalar coordinates
-        if site_name:
-            ds.coords["site_id"] = site_name
-        if sensor_height:
-            ds.coords["height"] = sensor_height
-        elif sensor_config:
-            # Use sensor_config as height if no explicit height (e.g., 'unshielded')
-            ds.coords["height"] = sensor_config
-        
-        # Add shielding as a coordinate dimension
-        ds.coords["shielding"] = shielding_status
 
         # Add attributes to variables
         for var in ds.data_vars:
@@ -301,6 +385,10 @@ def clean_hobo_pendants(
         if convert_to_local_tz:
             start_time = pd.Timestamp(start_time)
             end_time = pd.Timestamp(end_time)
+
+        # Populate spatial metadata if deployment metadata is provided
+        if deployment_metadata_path and deployment_metadata_path.exists():
+            ds = _populate_spatial_metadata(ds, deployment_metadata_path)
 
         fname = f"{sn}_{start_time.strftime('%Y%m%dT%H%M')}_{end_time.strftime('%Y%m%dT%H%M')}.nc"
         pout = dir_out / fname
@@ -353,6 +441,80 @@ def load_deployment_metadata(csv_path: Path) -> Dict[str, Dict[str, float]]:
     return metadata
 
 
+def _populate_spatial_metadata(ds: "xr.Dataset", deployment_metadata_path: Path) -> "xr.Dataset":
+    """
+    Populate elevation, latitude, and longitude coordinates from deployment metadata.
+    
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset with site_id coordinate containing site names
+    deployment_metadata_path : Path
+        Path to deployment_periods.csv file
+        
+    Returns
+    -------
+    xr.Dataset
+        Dataset with populated spatial coordinates
+    """
+    import numpy as np
+    
+    # Load deployment metadata
+    metadata = load_deployment_metadata(deployment_metadata_path)
+    
+    if not metadata or not metadata.get('elevations'):
+        print(f"Warning: No elevation data found in {deployment_metadata_path}")
+        return ds
+    
+    # Create copies of coordinate arrays to modify
+    new_elevations = list(ds.elevation.values)
+    new_latitudes = list(ds.latitude.values) 
+    new_longitudes = list(ds.longitude.values)
+    
+    # Create case-insensitive lookup dictionaries
+    elevation_lookup = {k.lower(): v for k, v in metadata['elevations'].items()}
+    latitude_lookup = {k.lower(): v for k, v in metadata.get('latitudes', {}).items()}
+    longitude_lookup = {k.lower(): v for k, v in metadata.get('longitudes', {}).items()}
+    
+    # Populate spatial metadata for each sensor
+    for i, site_id in enumerate(ds.site_id.values):
+        site_name = str(site_id).strip()
+        
+        # Skip if site_name is empty or unknown
+        if not site_name or site_name.lower() in ['', 'unknown', 'nan']:
+            continue
+            
+        # Convert to lowercase for case-insensitive lookup
+        site_name_lower = site_name.lower()
+            
+        # Look up elevation
+        if site_name_lower in elevation_lookup:
+            new_elevations[i] = float(elevation_lookup[site_name_lower])
+            
+        # Look up latitude (if available)
+        if site_name_lower in latitude_lookup:
+            new_latitudes[i] = float(latitude_lookup[site_name_lower])
+            
+        # Look up longitude (if available) 
+        if site_name_lower in longitude_lookup:
+            new_longitudes[i] = float(longitude_lookup[site_name_lower])
+    
+    # Update coordinates in dataset
+    ds = ds.assign_coords({
+        'elevation': ('sensor_idx', new_elevations),
+        'latitude': ('sensor_idx', new_latitudes),
+        'longitude': ('sensor_idx', new_longitudes)
+    })
+    
+    # Count how many sites were populated
+    n_populated = sum(1 for elev in new_elevations if not np.isnan(elev))
+    n_total = len(new_elevations)
+    
+    print(f"Populated elevation data for {n_populated}/{n_total} sensors from deployment metadata")
+    
+    return ds
+
+
 def load_netcdf_with_masking(
     nc_file: Path,
     csv_deployment_path: Path,
@@ -392,13 +554,23 @@ def load_netcdf_with_masking(
     try:
         ds = xr.open_dataset(nc_file)
 
-        # Extract metadata
-        site_name = ds.attrs.get("site_name", "Unknown")
-        sensor_height = ds.attrs.get("sensor_height", "Unknown")
-        sensor_id = ds.attrs.get("sensor_id", "Unknown")
+        # Extract metadata from sensor_idx structure (REQUIRED)
+        if "sensor_idx" not in ds.dims:
+            raise ValueError(f"File {nc_file.name} does not have sensor_idx structure. "
+                           f"All intermediate data must be regenerated with the new structure.")
+        
+        if len(ds.sensor_idx) == 0:
+            return None
+            
+        # Extract from coordinates (single sensor per file)
+        sensor_idx = 0
+        site_name = ds.site_id.values[sensor_idx] if "site_id" in ds.coords else "Unknown"
+        sensor_height = ds.height.values[sensor_idx] if "height" in ds.coords else "Unknown"
+        sensor_id = ds.sensor_id.values[sensor_idx] if "sensor_id" in ds.coords else "Unknown"
 
-        # Get temperature data
-        temp_data = ds["temp_c"].dropna("datetime")
+        # Get temperature data with sensor_idx structure: (sensor_idx, datetime)
+        datetime_coord = "datetime" if "datetime" in ds.coords else "datetime_utc"
+        temp_data = ds["temp_c"].isel(sensor_idx=0).dropna(datetime_coord)
 
         if len(temp_data) < 10:  # Require minimum data
             return None
@@ -435,13 +607,13 @@ def load_netcdf_with_masking(
                         result["deployed_mask"] = deployed_mask
                 else:
                     # If no deployment periods found, assume all data is deployed
-                    deployed_mask = np.ones(len(ds.datetime), dtype=bool)
+                    deployed_mask = np.ones(len(ds[datetime_coord]), dtype=bool)
                     if not apply_mask_to_data:
                         result["deployed_mask"] = deployed_mask
             except Exception as e:
                 # If deployment period lookup fails, warn and assume all data is deployed
                 warnings.warn(f"Failed to get deployment periods for site {site_name}: {e}. Assuming all data is deployed.")
-                deployed_mask = np.ones(len(ds.datetime), dtype=bool)
+                deployed_mask = np.ones(len(ds[datetime_coord]), dtype=bool)
                 if not apply_mask_to_data:
                     result["deployed_mask"] = deployed_mask
 
@@ -535,7 +707,12 @@ def load_all_pendant_data(
             if "intensity_lux" in ds.data_vars:
                 sensor_info["dataset"] = ds.drop_vars("intensity_lux")
 
-        site_data[site_key][sensor_height] = sensor_info
+        # Create combined key to distinguish sensors at same height with different shielding
+        ds = sensor_info["dataset"]
+        shielding = ds.shielding.values[0] if "shielding" in ds.coords else "unknown"
+        combined_key = f"{sensor_height}_{shielding}" if sensor_height else shielding
+        
+        site_data[site_key][combined_key] = sensor_info
 
     return site_data
 
@@ -980,16 +1157,22 @@ def read_hobo_pendant(p: Path):
 
 def read_pendant_dataset(ps: list[Path]):
     """
-    Read multiple HOBO pendant netcdf files and concatenate them efficiently
-    Uses xarray's open_mfdataset for automatic concatenation
+    Read multiple HOBO pendant netcdf files and concatenate them efficiently along sensor_idx dimension.
+    Uses xarray's open_mfdataset for automatic concatenation with the new sensor_idx structure.
     """
     if not ps:
         return None
 
     # Use xarray's built-in multi-file dataset loading
+    # Concatenate along sensor_idx dimension instead of sensor_id
     mfds = xr.open_mfdataset(
-        ps, combine="nested", concat_dim="sensor_id", decode_times=True
+        ps, combine="nested", concat_dim="sensor_idx", decode_times=True
     )
+
+    # Fix sensor_idx to be sequential (0, 1, 2, 3...) instead of all zeros
+    # This is necessary because each individual file has sensor_idx=0
+    new_sensor_idx = list(range(len(mfds.sensor_idx)))
+    mfds = mfds.assign_coords(sensor_idx=new_sensor_idx)
 
     return mfds
 
@@ -1186,6 +1369,7 @@ def clean_pace_loggers(
     dir_out: Path,
     convert_to_local_tz: bool = False,
     utc_offset_hours: float = -9.0,
+    deployment_metadata_path: Optional[Path] = None,
 ):
     """
     Parse Pace logger data files from intensive monitoring sites and convert to NetCDF.
@@ -1200,6 +1384,8 @@ def clean_pace_loggers(
         If True, convert from UTC storage to local timezone (default: False)
     utc_offset_hours : float, optional
         UTC offset in hours for local timezone conversion (default: -9.0 for AKST)
+    deployment_metadata_path : Path, optional
+        Path to deployment_periods.csv file containing site elevations, coordinates
     
     Notes
     -----
@@ -1226,7 +1412,7 @@ def clean_pace_loggers(
         file_paths = [file_paths]
     
     for file_path in tqdm(file_paths, desc="Processing Pace logger files"):
-        _process_single_pace_file(file_path, dir_out, convert_to_local_tz, utc_offset_hours)
+        _process_single_pace_file(file_path, dir_out, convert_to_local_tz, utc_offset_hours, deployment_metadata_path)
 
 
 def _parse_pace_header(lines: list[str]) -> dict:
@@ -1379,10 +1565,10 @@ def _clean_pace_column_names(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
 
 
 def _create_pace_dataset(df: pd.DataFrame, metadata: dict, file_path: Path) -> xr.Dataset:
-    """Create xarray dataset from parsed Pace logger data."""
+    """Create xarray dataset from parsed Pace logger data using sensor_idx structure."""
     
-    # Extract site name from label or filename
-    site_name = metadata.get('label', file_path.stem).strip()
+    # Extract site name from filename (not from file label which can be incorrect)
+    site_name = file_path.stem
     
     # Convert datetime to UTC (assuming input is in local time)
     df['datetime_utc'] = pd.to_datetime(df['datetime']).dt.tz_localize(ZoneInfo("America/Anchorage")).dt.tz_convert("UTC").dt.tz_localize(None)
@@ -1391,62 +1577,114 @@ def _create_pace_dataset(df: pd.DataFrame, metadata: dict, file_path: Path) -> x
     temp_cols = [col for col in df.columns if col.startswith('temp_c_')]
     other_cols = [col for col in df.columns if not col.startswith(('temp_c_', 'datetime'))]
     
-    # Process temperature variables to extract heights
-    temp_data = {}
-    height_values = []
+    # Create sensor entries for each height that has data
+    sensors = []
     
+    # Process temperature variables to create sensor entries
     for col in temp_cols:
         height_match = re.search(r"temp_c_(\d+)cm", col)
         if height_match:
             height_cm = int(height_match.group(1))
             height_m = height_cm / 100.0  # Convert to meters
-            height_values.append(height_m)
-            temp_data[height_m] = df[col].values
+            height_str = f"{height_m}m"
+            
+            sensors.append({
+                'height': height_str,
+                'sensor_type': 'pace',
+                'sensor_generation': 'pace_logger',
+                'shielding': 'unshielded',  # Pace sensors are unshielded
+                'variable_type': 'temperature',
+                'data': df[col].values
+            })
     
-    # Add heights for other variables
-    other_var_heights = {}
+    # Process other meteorological variables
     for col in other_cols:
         if col == 'pressure':
-            # Pressure at 1m
-            other_var_heights[col] = 1.0
+            height_str = "1m"  # Pressure at 1m
         else:
-            # Other meteorological variables at 2m  
-            other_var_heights[col] = 2.0
+            height_str = "2m"  # Other meteorological variables at 2m
         
-        # Add to height list if not already present
-        if other_var_heights[col] not in height_values:
-            height_values.append(other_var_heights[col])
+        sensors.append({
+            'height': height_str,
+            'sensor_type': 'pace',
+            'sensor_generation': 'pace_logger',
+            'shielding': 'unshielded',
+            'variable_type': col,
+            'data': df[col].values
+        })
     
-    # Sort all heights
-    height_values = sorted(set(height_values))
+    # If no sensors found, create a minimal dataset
+    if not sensors:
+        return None
     
-    # Create data variables dictionary
+    # Create sensor_idx coordinate and sensor attribute coordinates
+    n_sensors = len(sensors)
+    sensor_indices = list(range(n_sensors))
+    
+    # Extract serial number from metadata
+    serial_number = metadata.get('serial_number', 'unknown')
+    
+    # Create data variables dictionary - each variable gets its own array
     data_vars = {}
     
-    # Create temperature array with all heights
-    if temp_data:
-        temp_array = np.full((len(df), len(height_values)), np.nan)
-        for i, height in enumerate(height_values):
-            if height in temp_data:
-                temp_array[:, i] = temp_data[height]
-        data_vars['temp_c'] = (['datetime_utc', 'height'], temp_array)
+    # Initialize coordinate arrays
+    site_ids = []
+    heights = []
+    shielding_types = []
+    sensor_types = []
+    sensor_generations = []
+    sensor_ids = []
+    elevations = []
+    latitudes = []
+    longitudes = []
+    
+    # Create arrays for each variable type
+    temp_array = np.full((n_sensors, len(df)), np.nan)
     
     # Create arrays for other variables
+    other_var_arrays = {}
     for col in other_cols:
-        var_height = other_var_heights[col]
-        var_array = np.full((len(df), len(height_values)), np.nan)
+        other_var_arrays[col] = np.full((n_sensors, len(df)), np.nan)
+    
+    # Fill in data and coordinates
+    for i, sensor in enumerate(sensors):
+        # Fill coordinate arrays
+        site_ids.append(site_name)
+        heights.append(sensor['height'])
+        shielding_types.append(sensor['shielding'])
+        sensor_types.append(sensor['sensor_type'])
+        sensor_generations.append(sensor['sensor_generation'])
+        sensor_ids.append(f"{serial_number}_{sensor['height']}_{sensor['variable_type']}")
+        elevations.append(np.nan)  # To be filled from deployment metadata
+        latitudes.append(np.nan)
+        longitudes.append(np.nan)
         
-        # Find index of this variable's height
-        height_idx = height_values.index(var_height)
-        var_array[:, height_idx] = df[col].values
-        
-        data_vars[col] = (['datetime_utc', 'height'], var_array)
+        # Fill data arrays
+        if sensor['variable_type'] == 'temperature':
+            temp_array[i, :] = sensor['data']
+        elif sensor['variable_type'] in other_var_arrays:
+            other_var_arrays[sensor['variable_type']][i, :] = sensor['data']
+    
+    # Create data variables
+    data_vars['temp_c'] = (['sensor_idx', 'datetime_utc'], temp_array)
+    
+    for var_name, var_array in other_var_arrays.items():
+        data_vars[var_name] = (['sensor_idx', 'datetime_utc'], var_array)
     
     # Create coordinates
     coords = {
+        'sensor_idx': sensor_indices,
         'datetime_utc': df['datetime_utc'],
-        'height': height_values,
-        'site_id': site_name
+        # Sensor attributes as coordinates
+        'site_id': ('sensor_idx', site_ids),
+        'height': ('sensor_idx', heights),
+        'shielding': ('sensor_idx', shielding_types),
+        'sensor_type': ('sensor_idx', sensor_types),
+        'sensor_generation': ('sensor_idx', sensor_generations),
+        'sensor_id': ('sensor_idx', sensor_ids),
+        'elevation': ('sensor_idx', elevations),
+        'latitude': ('sensor_idx', latitudes),
+        'longitude': ('sensor_idx', longitudes),
     }
     
     # Create dataset
@@ -1454,6 +1692,10 @@ def _create_pace_dataset(df: pd.DataFrame, metadata: dict, file_path: Path) -> x
     
     # Add CF-compliant attributes
     _add_pace_attributes(ds, metadata)
+    
+    # Add structure information
+    ds.attrs['structure'] = 'sensor_idx × datetime'
+    ds.attrs['n_sensors'] = n_sensors
     
     return ds
 
@@ -1518,7 +1760,7 @@ def _add_pace_attributes(ds: xr.Dataset, metadata: dict):
         })
 
 
-def _save_pace_netcdf(ds: xr.Dataset, dir_out: Path, metadata: dict, time_coord_name: str):
+def _save_pace_netcdf(ds: xr.Dataset, dir_out: Path, metadata: dict, time_coord_name: str, site_name: str):
     """Save xarray dataset as NetCDF file with appropriate filename."""
     
     # Get time range for filename
@@ -1526,9 +1768,8 @@ def _save_pace_netcdf(ds: xr.Dataset, dir_out: Path, metadata: dict, time_coord_
     start_time = pd.Timestamp(time_data.values[0])
     end_time = pd.Timestamp(time_data.values[-1])
     
-    # Create filename
+    # Create filename using provided site_name (from filename, not metadata label)
     serial_number = metadata.get('serial_number', 'unknown')
-    site_name = metadata.get('label', 'unknown').replace(' ', '_').replace('-', '_')
     
     filename = f"{serial_number}_{site_name}_{start_time.strftime('%Y%m%dT%H%M')}_{end_time.strftime('%Y%m%dT%H%M')}.nc"
     output_path = dir_out / filename
@@ -1542,7 +1783,8 @@ def _process_single_pace_file(
     file_path: Path,
     dir_out: Path, 
     convert_to_local_tz: bool,
-    utc_offset_hours: float
+    utc_offset_hours: float,
+    deployment_metadata_path: Optional[Path] = None
 ):
     """Process a single Pace logger file and save as NetCDF."""
     
@@ -1569,8 +1811,179 @@ def _process_single_pace_file(
     else:
         time_coord_name = "datetime_utc"
     
+    # Populate spatial metadata if deployment metadata is provided
+    if deployment_metadata_path and deployment_metadata_path.exists():
+        ds = _populate_spatial_metadata(ds, deployment_metadata_path)
+
     # Generate output filename and save
-    _save_pace_netcdf(ds, dir_out, metadata, time_coord_name)
+    site_name = file_path.stem  # Use filename for output file naming
+    _save_pace_netcdf(ds, dir_out, metadata, time_coord_name, site_name)
+
+
+def load_and_merge_lvl0_data(
+    lvl0_main_path: Optional[Path] = None,
+    lvl0_intensive_path: Optional[Path] = None,
+    time_slice: Optional[slice] = None,
+    drop_conflicting_sites: bool = True
+) -> xr.Dataset:
+    """
+    Load and merge lvl0_main and lvl0_combined_intensive NetCDF files.
+    
+    This function loads both level 0 processed datasets and merges them into a single
+    xarray Dataset with consistent dimensions. The main dataset contains regular 
+    monitoring sites with pendant sensors, while the intensive dataset contains
+    fewer sites but with additional meteorological variables from pace loggers.
+    
+    Parameters
+    ----------
+    lvl0_main_path : Path, optional
+        Path to lvl0_main.nc file. If None, uses default project path.
+    lvl0_intensive_path : Path, optional  
+        Path to lvl0_combined_intensive.nc file. If None, uses default project path.
+    time_slice : slice, optional
+        Time slice to apply to both datasets for memory efficiency.
+    drop_conflicting_sites : bool, optional
+        If True, removes sites that appear in both datasets to avoid conflicts.
+        Keeps the intensive version when conflicts occur (default: True).
+        
+    Returns
+    -------
+    xr.Dataset
+        Merged dataset with harmonized dimensions:
+        - site_id: All unique sites from both datasets
+        - height: All unique heights from both datasets  
+        - datetime: Overlapping time period from both datasets
+        - Variables from both datasets, with NaN for missing combinations
+        
+    Raises
+    ------
+    FileNotFoundError
+        If either input file cannot be found
+    ValueError
+        If datasets cannot be merged due to incompatible structures
+        
+    Examples
+    --------
+    Load and merge with default paths:
+    >>> merged_ds = load_and_merge_lvl0_data()
+    
+    Load specific time period:
+    >>> merged_ds = load_and_merge_lvl0_data(time_slice=slice('2025-06-01', '2025-08-01'))
+    
+    Keep conflicting sites from both datasets:
+    >>> merged_ds = load_and_merge_lvl0_data(drop_conflicting_sites=False)
+    """
+    
+    # Set default paths if not provided
+    if lvl0_main_path is None:
+        lvl0_main_path = Path(ROOT) / "data/2025/processed/lvl0/lvl0_main.nc"
+    if lvl0_intensive_path is None:
+        lvl0_intensive_path = Path(ROOT) / "data/2025/processed/lvl0/lvl0_combined_intensive.nc"
+    
+    # Check that files exist
+    if not lvl0_main_path.exists():
+        raise FileNotFoundError(f"Main dataset not found: {lvl0_main_path}")
+    if not lvl0_intensive_path.exists():
+        raise FileNotFoundError(f"Intensive dataset not found: {lvl0_intensive_path}")
+    
+    # Load datasets
+    print(f"Loading main dataset: {lvl0_main_path}")
+    ds_main = xr.open_dataset(lvl0_main_path)
+    
+    print(f"Loading intensive dataset: {lvl0_intensive_path}")
+    ds_intensive = xr.open_dataset(lvl0_intensive_path)
+    
+    # Apply time slice if provided
+    if time_slice is not None:
+        print(f"Applying time slice: {time_slice}")
+        ds_main = ds_main.sel(datetime=time_slice)
+        ds_intensive = ds_intensive.sel(datetime=time_slice)
+    
+    # Harmonize coordinate names and structures
+    print("Harmonizing dataset structures...")
+    
+    # Rename 'shielded' coordinate to 'shielding' in intensive dataset for consistency
+    if 'shielded' in ds_intensive.coords:
+        ds_intensive = ds_intensive.rename({'shielded': 'shielding'})
+    
+    # Handle overlapping sites
+    main_sites = set(ds_main.site_id.values)
+    intensive_sites = set(ds_intensive.site_id.values)
+    overlapping_sites = main_sites.intersection(intensive_sites)
+    
+    if overlapping_sites and drop_conflicting_sites:
+        print(f"Removing overlapping sites from main dataset: {overlapping_sites}")
+        # Keep only non-overlapping sites in main dataset
+        non_overlapping_main_sites = [site for site in ds_main.site_id.values 
+                                     if site not in overlapping_sites]
+        if non_overlapping_main_sites:
+            ds_main = ds_main.sel(site_id=non_overlapping_main_sites)
+        else:
+            # If all main sites overlap, create empty dataset with same structure
+            ds_main = ds_main.isel(site_id=slice(0, 0))
+    
+    # With the new sensor_idx structure, merging is much simpler
+    # Both datasets should now have dimensions: (sensor_idx, datetime)
+    # Sensor attributes are stored as coordinates indexed by sensor_idx
+    
+    # The datasets can be concatenated directly along the sensor_idx dimension
+    ds_main_modified = ds_main.copy()
+    ds_intensive_modified = ds_intensive.copy()
+    
+    # Find common time period
+    time_main = pd.to_datetime(ds_main_modified.datetime.values)
+    time_intensive = pd.to_datetime(ds_intensive_modified.datetime.values)
+    
+    # Convert datetime coordinates to comparable format
+    if hasattr(ds_main_modified.datetime, 'values'):
+        time_main_range = (time_main.min(), time_main.max())
+    if hasattr(ds_intensive_modified.datetime, 'values'):
+        time_intensive_range = (time_intensive.min(), time_intensive.max())
+    
+    print(f"Main dataset time range: {time_main_range[0]} to {time_main_range[1]}")
+    print(f"Intensive dataset time range: {time_intensive_range[0]} to {time_intensive_range[1]}")
+    
+    # Find overlapping time period
+    overlap_start = max(time_main_range[0], time_intensive_range[0])
+    overlap_end = min(time_main_range[1], time_intensive_range[1])
+    
+    if overlap_start >= overlap_end:
+        warnings.warn("No overlapping time period found between datasets")
+        # Use full time range from both datasets
+    else:
+        print(f"Overlapping time period: {overlap_start} to {overlap_end}")
+    
+    # Merge the datasets using sensor_idx concatenation
+    print("Merging datasets...")
+    try:
+        # With sensor_idx structure, simply concatenate along the sensor_idx dimension
+        merged_ds = xr.concat([ds_main_modified, ds_intensive_modified], 
+                             dim='sensor_idx', 
+                             data_vars='all',
+                             coords='all')
+        
+        # Add metadata about the merge
+        merged_ds.attrs.update({
+            'merged_from': 'lvl0_main.nc and lvl0_combined_intensive.nc',
+            'merge_timestamp': pd.Timestamp.now().isoformat(),
+            'n_main_sensors': len(ds_main.sensor_idx) if len(ds_main.sensor_idx) > 0 else 0,
+            'n_intensive_sensors': len(ds_intensive.sensor_idx),
+            'total_sensors': len(merged_ds.sensor_idx),
+            'overlapping_sites_removed': list(overlapping_sites) if drop_conflicting_sites else [],
+            'drop_conflicting_sites': drop_conflicting_sites,
+            'structure': 'sensor_idx × datetime'
+        })
+        
+        print(f"Successfully merged datasets:")
+        print(f"  - Main dataset sensors: {len(ds_main.sensor_idx) if len(ds_main.sensor_idx) > 0 else 0}")
+        print(f"  - Intensive dataset sensors: {len(ds_intensive.sensor_idx)}")
+        print(f"  - Total merged sensors: {len(merged_ds.sensor_idx)}")
+        print(f"  - Data variables: {list(merged_ds.data_vars.keys())}")
+        
+        return merged_ds
+        
+    except Exception as e:
+        raise ValueError(f"Failed to merge datasets: {e}")
 
 
 def read_rgi(product: str, v=7):
