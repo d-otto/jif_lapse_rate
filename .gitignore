@@ -4,7 +4,9 @@ data/external/*.tif
 data/external/*/**
 **/scratch
 docker/
+docs/
 api_keys.py
+CLAUDE.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -200,6 +202,9 @@ cython_debug/
 # IntelliJ
 out/
 .idea
+
+# VS Code
+.vscode/
 
 # mpeltonen/sbt-idea plugin
 .idea_modules/
