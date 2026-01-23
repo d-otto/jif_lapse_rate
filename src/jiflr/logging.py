@@ -115,6 +115,37 @@ def setup_pipeline_logging(
     return logger
 
 
+def setup_console_logging(level: int = logging.INFO) -> logging.Logger:
+    """
+    Configure console-only logging for subprocess scripts.
+
+    When run as a subprocess, output goes to stdout and the parent
+    process captures and logs it. No file handler needed.
+
+    Parameters
+    ----------
+    level : int
+        Logging level (default: logging.INFO)
+
+    Returns
+    -------
+    logging.Logger
+        Configured logger instance with console-only output
+    """
+    logger = logging.getLogger("jiflr.pipeline")
+    logger.handlers.clear()
+    logger.setLevel(level)
+
+    # Console handler only - parent will capture and log to file
+    console_handler = TqdmCompatibleHandler(sys.stdout)
+    console_handler.setLevel(level)
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(console_handler)
+
+    logger.propagate = False
+    return logger
+
+
 def get_logger() -> logging.Logger:
     """
     Get the pipeline logger instance.

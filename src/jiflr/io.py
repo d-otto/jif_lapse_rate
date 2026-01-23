@@ -14,6 +14,9 @@ import logging
 from dask.distributed import LocalCluster, Client
 import zarr
 
+import geopandas as gpd
+from jiflr import ROOT
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -392,12 +395,12 @@ def convert_era5_to_zarr(
 ) -> xr.Dataset:
     """
     Convenience function to convert ERA5 monthly CDS files to zarr.
-    
+
     Args:
         era5_dir: Directory containing ERA5 .grib files
         output_zarr: Path for output zarr store
         overwrite: Whether to overwrite existing zarr store
-        
+
     Returns:
         The created xarray Dataset
     """
@@ -407,3 +410,81 @@ def convert_era5_to_zarr(
         pattern="*.grib",
         overwrite=overwrite
     )
+
+
+# ============================================================================
+# SENSOR DATA READING FUNCTIONS
+# ============================================================================
+
+
+def read_hobo_pendant(p: Path) -> xr.Dataset:
+    """
+    Read a single HOBO pendant netcdf file.
+
+    Parameters
+    ----------
+    p : Path
+        Path to the NetCDF file
+
+    Returns
+    -------
+    xr.Dataset
+        xarray Dataset with proper coordinates
+    """
+    return xr.open_dataset(p)
+
+
+def read_pendant_dataset(ps: List[Path]) -> Optional[xr.Dataset]:
+    """
+    Read multiple HOBO pendant netcdf files and concatenate them efficiently along sensor_idx dimension.
+
+    Uses xarray's open_mfdataset for automatic concatenation with the new sensor_idx structure.
+
+    Parameters
+    ----------
+    ps : list[Path]
+        List of paths to NetCDF files
+
+    Returns
+    -------
+    xr.Dataset or None
+        Concatenated dataset, or None if empty list provided
+    """
+    if not ps:
+        return None
+
+    # Use xarray's built-in multi-file dataset loading
+    # Concatenate along sensor_idx dimension instead of sensor_id
+    mfds = xr.open_mfdataset(
+        ps, combine="nested", concat_dim="sensor_idx", decode_times=True
+    )
+
+    # Fix sensor_idx to be sequential (0, 1, 2, 3...) instead of all zeros
+    # This is necessary because each individual file has sensor_idx=0
+    new_sensor_idx = list(range(len(mfds.sensor_idx)))
+    mfds = mfds.assign_coords(sensor_idx=new_sensor_idx)
+
+    return mfds
+
+
+def read_rgi(product: str, v: int = 7) -> gpd.GeoDataFrame:
+    """
+    Read Regional Glacier Inventory (RGI) data.
+
+    Parameters
+    ----------
+    product : str
+        RGI product type (e.g., 'G' for glaciers)
+    v : int, optional
+        RGI version (default: 7)
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        GeoDataFrame containing RGI glacier inventory data
+    """
+    product = product.upper()
+    p = Path(ROOT, f"data/external/rgi7/RGI2000-v7.0-{product}-01_alaska")
+    rgi = gpd.read_file(p)
+
+    return rgi
