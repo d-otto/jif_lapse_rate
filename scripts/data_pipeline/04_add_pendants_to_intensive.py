@@ -28,9 +28,14 @@ from typing import Dict, List
 from jiflr import ROOT
 from jiflr.data import replace_utc_datetime_coord
 from jiflr.logging import indent, key_value, setup_pipeline_logging, subheader
+from jiflr.utils import get_deployment_periods, apply_deployment_mask
 
 
-def load_pace_data(pace_dir: Path, logger) -> Dict[str, xr.Dataset]:
+def load_pace_data(
+    pace_dir: Path,
+    logger,
+    csv_deployment_path: Path = None,
+) -> Dict[str, xr.Dataset]:
     """
     Load all pace data files from the intermediate/pace directory.
 
@@ -40,6 +45,9 @@ def load_pace_data(pace_dir: Path, logger) -> Dict[str, xr.Dataset]:
         Directory containing pace NetCDF files
     logger : logging.Logger
         Logger instance
+    csv_deployment_path : Path, optional
+        Path to deployment_periods.csv for applying deployment masking.
+        If provided, data will be filtered to deployment periods only.
 
     Returns
     -------
@@ -83,6 +91,29 @@ def load_pace_data(pace_dir: Path, logger) -> Dict[str, xr.Dataset]:
                     f"Duplicate pace data for site {site_name}, skipping {pace_file.name}"
                 )
                 continue
+
+            # Apply deployment masking (analogous to pendant masking in step 03)
+            if csv_deployment_path and csv_deployment_path.exists():
+                # Get site_id from the first sensor (all sensors in file share same site)
+                site_id = str(ds.site_id.values[0]) if 'site_id' in ds.coords else site_name
+
+                # Get datetime coordinate and data start time
+                datetime_coord_name = 'datetime_utc' if 'datetime_utc' in ds.coords else 'datetime'
+                data_start_time = pd.Timestamp(ds[datetime_coord_name].values[0])
+
+                # Check for deployment periods (use default_start so missing deploy_date falls back gracefully)
+                periods_dict = get_deployment_periods(
+                    site_id,
+                    csv_deployment_path,
+                    default_start=data_start_time,
+                    logger=logger,
+                )
+
+                if periods_dict.get(site_id):
+                    ds = apply_deployment_mask(ds, site_id, csv_deployment_path, ignore_missing=True)
+                    logger.info(indent(f"Applied deployment masking for site: {site_id}", level=2))
+                else:
+                    logger.warning(f"No deployment periods found for PACE site: {site_id}")
 
             pace_data[site_name] = ds
             logger.info(indent(f"Loaded pace data for site: {site_name}"))
@@ -236,6 +267,7 @@ def standardize_height_formats(heights: List) -> List[str]:
     return sorted(set(standardized))
 
 
+# TODO: Remove this
 def map_site_names(pace_sites: List[str], pendant_sites: List[str]) -> Dict[str, str]:
     """
     Create mapping between pace site names and pendant site names.
@@ -462,17 +494,19 @@ def main():
     pace_dir = base_dir / "intermediate" / "pace"
     pendant_dir = base_dir / "intermediate" / "pendants" / "by_site" / "intensive"
     output_dir = base_dir / "processed" / "lvl0"
+    csv_deployment_path = Path(ROOT) / "data" / "2025" / "metadata" / "deployment_periods.csv"
 
     logger.info(key_value("Pace data directory", str(pace_dir)))
     logger.info(key_value("Pendant data directory", str(pendant_dir)))
     logger.info(key_value("Output directory", str(output_dir)))
+    logger.info(key_value("Deployment CSV", str(csv_deployment_path)))
 
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load data
     logger.info(subheader("1. Loading pace data"))
-    pace_data = load_pace_data(pace_dir, logger)
+    pace_data = load_pace_data(pace_dir, logger, csv_deployment_path)
 
     logger.info(subheader("2. Loading pendant data"))
     pendant_data = load_pendant_data(pendant_dir, logger)

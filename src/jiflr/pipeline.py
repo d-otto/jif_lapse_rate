@@ -378,11 +378,11 @@ def _populate_spatial_metadata(
     # Count how many sites were populated
     n_populated = sum(1 for elev in new_elevations if not np.isnan(elev))
     n_total = len(new_elevations)
-    
+
     # Only log if elevation data is not found for any of the sensors
     if n_populated < n_total:
         _logger.info(
-            f"Populated elevation data for {n_populated}/{n_total} sensors from deployment metadata"
+            f"Populated elevation data for {n_populated}/{n_total} sensors from deployment metadata for {site_name}"
         )
 
     return ds
@@ -419,8 +419,8 @@ def clean_hobo_pendants(
     if isinstance(ps, list) is False:
         ps = [ps]
 
-    # Load shielding information if data inventory provided
-    shielding_info = {}
+    # Load sensor metadata from data inventory (site_id, height, shielding)
+    sensor_metadata = {}
     if data_inventory_path and data_inventory_path.exists():
         try:
             inventory_df = pd.read_excel(data_inventory_path)
@@ -453,16 +453,30 @@ def clean_hobo_pendants(
                 melted = melted.dropna(subset=["sensor_id"])
                 melted["sensor_id"] = melted["sensor_id"].astype(int).astype(str)
 
-                # Determine shielding status for each sensor
+                # Extract full metadata for each sensor
                 for _, row in melted.iterrows():
                     sensor_id = row["sensor_id"]
-                    sensor_type = row["sensor_type"]
+                    sensor_type = row[
+                        "sensor_type"
+                    ]  # e.g., "2m", "1m", "2m_unshielded"
+                    site_id = row["site_id"]
 
-                    # If the sensor comes from an unshielded column, it's unshielded
-                    if "unshielded" in sensor_type:
-                        shielding_info[sensor_id] = "unshielded"
-                    else:
-                        shielding_info[sensor_id] = "shielded"
+                    # Standardize site_id to Title Case (e.g., "windward2" -> "Windward2")
+                    site_id = str(site_id).title()
+
+                    # Extract height from column name (remove _unshielded suffix)
+                    height = sensor_type.replace("_unshielded", "")
+
+                    # Determine shielding status
+                    shielding = (
+                        "unshielded" if "unshielded" in sensor_type else "shielded"
+                    )
+
+                    sensor_metadata[sensor_id] = {
+                        "site_id": site_id,
+                        "height": height,
+                        "shielding": shielding,
+                    }
 
         except Exception as e:
             warnings.warn(f"Could not load data inventory: {e}")
@@ -607,6 +621,7 @@ def clean_hobo_pendants(
         # Convert temperature from Fahrenheit if needed
         if temp_col and temp_unit == "F":
             df_clean["temp_c"] = (df_clean["temp_c"] - 32) * 5 / 9
+            temp_unit = "C"
 
         # Combine event columns
         # TODO: add more events here? Missing coupler ones, but prob not useful.
@@ -630,6 +645,11 @@ def clean_hobo_pendants(
             df_clean["events"] = event_flags
             df_clean = df_clean.drop(columns=event_cols)
 
+        # Drop event-only rows (no temperature data)
+        # These are rows logged for button presses, host connections, etc.
+        if "temp_c" in df_clean.columns:
+            df_clean = df_clean.dropna(subset=["temp_c"])
+
         # Convert datetime with timezone if available
         df_clean["datetime"] = pd.to_datetime(
             df_clean["datetime"], format="%m/%d/%y %H:%M:%S"
@@ -646,8 +666,16 @@ def clean_hobo_pendants(
         # Convert to xarray Dataset using sensor_idx structure
         ds = xr.Dataset.from_dataframe(df_clean.set_index("datetime_utc"))
 
-        # Get shielding status for this sensor (default to 'shielded')
-        shielding_status = shielding_info.get(sn, "shielded")
+        # Look up metadata from inventory (preferred source)
+        if sn in sensor_metadata:
+            inv_meta = sensor_metadata[sn]
+            site_name = inv_meta["site_id"]
+            sensor_height = inv_meta["height"]
+            shielding_status = inv_meta["shielding"]
+        else:
+            # Fall back to filename parsing values (already extracted above)
+            # site_name and sensor_height already set from filename parsing
+            shielding_status = "shielded"  # Default when not in inventory
 
         # Create sensor_idx dimension (single sensor = index 0)
         sensor_idx = 0
@@ -1205,6 +1233,232 @@ def _add_pace_attributes(ds: xr.Dataset, metadata: dict):
         )
 
 
+def apply_wind_direction_correction(
+    ds: xr.Dataset, offsets: Dict[str, float], logger: logging.Logger
+) -> xr.Dataset:
+    """Apply azimuthal offset corrections to wind_direction variable.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset with wind_direction(sensor_idx, datetime) and site_id coordinate
+    offsets : dict
+        Dictionary mapping site names (lowercase) to offset degrees
+    logger : logging.Logger
+        Logger for diagnostic output
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with corrected wind_direction values
+    """
+    # Check if wind_direction variable exists
+    if "wind_direction" not in ds.data_vars:
+        logger.debug("No wind_direction variable found in dataset, skipping correction")
+        return ds
+
+    # Create a copy to avoid modifying original
+    ds = ds.copy()
+
+    # Iterate over each sensor_idx
+    for idx in ds.sensor_idx.values:
+        # Get wind direction data for this sensor
+        wind_dir = ds.wind_direction.sel(sensor_idx=idx)
+
+        # Skip this sensor_idx if all wind_direction values are NaN
+        if wind_dir.isnull().all():
+            continue
+
+        # Get site_id for this sensor
+        site_id = ds.site_id.sel(sensor_idx=idx).values.item()
+
+        # Check if offset exists for this site (case-insensitive)
+        site_id_lower = str(site_id).lower()
+        if site_id_lower not in offsets:
+            logger.info(
+                f"Site {site_id} (sensor_idx={idx}): No wind direction offset specified, skipping"
+            )
+            continue
+
+        offset = offsets[site_id_lower]
+
+        # Calculate initial statistics (skipna=True)
+        initial_median = float(wind_dir.median(skipna=True).values)
+        initial_min = float(wind_dir.min(skipna=True).values)
+        initial_max = float(wind_dir.max(skipna=True).values)
+
+        # Apply correction and wrap to [0, 360) range
+        corrected_wind_dir = (wind_dir + offset) % 360
+
+        # Calculate final statistics
+        final_median = float(corrected_wind_dir.median(skipna=True).values)
+        final_min = float(corrected_wind_dir.min(skipna=True).values)
+        final_max = float(corrected_wind_dir.max(skipna=True).values)
+
+        # Update dataset
+        ds.wind_direction.loc[dict(sensor_idx=idx)] = corrected_wind_dir
+
+        # Log the correction
+        logger.info(
+            f"Site {site_id} (sensor_idx={idx}): Applied wind direction correction\n"
+            f"  Initial - median: {initial_median:.1f}°, min: {initial_min:.1f}°, max: {initial_max:.1f}°\n"
+            f"  Offset: {offset:+.1f}°\n"
+            f"  Final - median: {final_median:.1f}°, min: {final_min:.1f}°, max: {final_max:.1f}°"
+        )
+
+    # Update wind_direction attributes to document correction
+    ds.wind_direction.attrs.update(
+        {
+            "correction_applied": "true",
+            "correction_description": "Azimuthal offset correction applied based on deployment metadata",
+            "correction_date": pd.Timestamp.now().strftime("%Y-%m-%d"),
+        }
+    )
+
+    return ds
+
+
+def mask_wind_direction_by_speed(
+    ds: xr.Dataset,
+    wind_speed_threshold: float = 1.0,
+    wind_speed_var: str = "wind_speed_avg",
+    wind_direction_var: str = "wind_direction",
+    logger: Optional[logging.Logger] = None,
+) -> xr.Dataset:
+    """Mask wind direction values where wind speed is below threshold.
+
+    Wind direction measurements become unreliable at low wind speeds due to
+    sensor limitations and flow variability. This function sets wind direction
+    to NaN where wind speed is below a specified threshold (default: 1.0 m/s).
+
+    This function handles the case where PACE data splits wind_direction and
+    wind_speed_avg into separate sensor_idx entries (e.g., EM54054_2m_wind_direction
+    and EM54054_2m_wind_speed_avg as separate sensors). It matches sensors by
+    finding corresponding speed sensors for each direction sensor based on site_id.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset with wind_direction and wind_speed_avg variables
+    wind_speed_threshold : float, optional
+        Minimum wind speed in m/s below which direction is masked (default: 1.0)
+    wind_speed_var : str, optional
+        Name of wind speed variable (default: 'wind_speed_avg')
+    wind_direction_var : str, optional
+        Name of wind direction variable (default: 'wind_direction')
+    logger : logging.Logger, optional
+        Logger for diagnostic output
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with masked wind_direction values
+
+    Raises
+    ------
+    ValueError
+        If wind_direction or wind_speed variables are not in dataset
+    """
+    # Validate that required variables exist
+    if wind_direction_var not in ds.data_vars:
+        raise ValueError(f"Variable '{wind_direction_var}' not found in dataset")
+
+    if wind_speed_var not in ds.data_vars:
+        raise ValueError(f"Variable '{wind_speed_var}' not found in dataset")
+
+    # Create a copy to avoid modifying original
+    ds = ds.copy()
+
+    # Track total statistics across all sensors
+    total_masked = 0
+    total_points = 0
+    n_sensors_masked = 0
+
+    # Build a mapping of site_id -> sensor_idx for sensors with wind_speed data
+    speed_sensor_map = {}
+    for idx in ds.sensor_idx.values:
+        wind_speed = ds[wind_speed_var].sel(sensor_idx=idx)
+        if (~wind_speed.isnull()).sum() > 0:  # Has wind speed data
+            site_id = str(ds.site_id.sel(sensor_idx=idx).values.item())
+            speed_sensor_map[site_id] = idx
+
+    # Iterate over each sensor_idx to find sensors with wind_direction
+    for idx in ds.sensor_idx.values:
+        wind_dir = ds[wind_direction_var].sel(sensor_idx=idx)
+
+        # Skip this sensor if wind_direction is all NaN (no wind data)
+        if wind_dir.isnull().all():
+            continue
+
+        # Get site_id for this direction sensor
+        site_id = str(ds.site_id.sel(sensor_idx=idx).values.item())
+
+        # Find corresponding speed sensor
+        if site_id not in speed_sensor_map:
+            if logger:
+                logger.warning(
+                    f"Site {site_id} (sensor_idx={idx}): Has wind_direction data but no corresponding "
+                    f"wind_speed_avg sensor found, skipping masking"
+                )
+            continue
+
+        # Get wind speed from the corresponding sensor
+        speed_idx = speed_sensor_map[site_id]
+        wind_speed = ds[wind_speed_var].sel(sensor_idx=speed_idx)
+
+        # Create mask for low wind speeds (including NaN wind speeds)
+        # Need to align wind_speed with wind_dir timeline (they should match but be safe)
+        low_speed_mask = wind_speed < wind_speed_threshold
+
+        # Count points before masking
+        n_total = int((~wind_dir.isnull()).sum().values)
+        n_to_mask = int((low_speed_mask & ~wind_dir.isnull()).sum().values)
+
+        # Apply mask: set wind direction to NaN where wind speed is low
+        masked_wind_dir = wind_dir.where(~low_speed_mask)
+
+        # Update dataset
+        ds[wind_direction_var].loc[dict(sensor_idx=idx)] = masked_wind_dir
+
+        # Update statistics
+        total_masked += n_to_mask
+        total_points += n_total
+        n_sensors_masked += 1
+
+        # Log the masking for this sensor
+        if logger:
+            percentage = 100.0 * n_to_mask / n_total if n_total > 0 else 0.0
+            logger.info(
+                f"Site {site_id} (dir_idx={idx}, speed_idx={speed_idx}): "
+                f"Masked {n_to_mask}/{n_total} points ({percentage:.1f}%) "
+                f"where {wind_speed_var} < {wind_speed_threshold} m/s"
+            )
+
+    # Log overall statistics
+    if logger:
+        if total_points > 0:
+            overall_percentage = 100.0 * total_masked / total_points
+            logger.info(
+                f"Overall wind direction masking: {total_masked}/{total_points} points "
+                f"({overall_percentage:.1f}%) masked across {n_sensors_masked} sensors"
+            )
+        else:
+            logger.info("No wind direction sensors found with valid data")
+
+    # Update wind_direction attributes to document masking
+    ds[wind_direction_var].attrs.update(
+        {
+            "wind_speed_masking_applied": "true",
+            "wind_speed_threshold_m_s": wind_speed_threshold,
+            "wind_speed_source_variable": wind_speed_var,
+            "masking_description": f"Wind direction masked to NaN where {wind_speed_var} < {wind_speed_threshold} m/s",
+            "masking_date": pd.Timestamp.now().strftime("%Y-%m-%d"),
+        }
+    )
+
+    return ds
+
+
 def _save_pace_netcdf(
     ds: xr.Dataset, dir_out: Path, metadata: dict, time_coord_name: str, site_name: str
 ):
@@ -1262,6 +1516,498 @@ def _process_single_pace_file(
     if deployment_metadata_path and deployment_metadata_path.exists():
         ds = _populate_spatial_metadata(ds, deployment_metadata_path)
 
+    # Apply deployment period masking and wind direction correction from the same CSV
+    if deployment_metadata_path and deployment_metadata_path.exists():
+        from jiflr.utils import get_wind_dir_offsets
+
+        deploy_df = pd.read_csv(deployment_metadata_path)
+        times = pd.DatetimeIndex(ds[time_coord_name].values)
+
+        for idx in ds.sensor_idx.values:
+            site_id = str(ds.site_id.sel(sensor_idx=idx).values.item())
+            site_rows = deploy_df[deploy_df["site"].str.lower() == site_id.lower()]
+
+            if site_rows.empty:
+                _logger.warning(
+                    f"Site {site_id}: no deployment period found in metadata, skipping mask"
+                )
+                continue
+
+            row = site_rows.iloc[0]
+            deploy_dt = (
+                pd.to_datetime(f"{row['deploy_date']} {row['deploy_time']}")
+                if pd.notna(row["deploy_date"])
+                else times[0]
+            )
+            pickup_dt = (
+                pd.to_datetime(f"{row['pickup_date']} {row['pickup_time']}")
+                if pd.notna(row["pickup_date"])
+                else times[-1]
+            )
+
+            valid = xr.DataArray(
+                (times >= deploy_dt) & (times <= pickup_dt),
+                dims=[time_coord_name],
+                coords={time_coord_name: ds[time_coord_name]},
+            )
+            n_masked = int((~valid).sum())
+            if n_masked > 0:
+                for var in ds.data_vars:
+                    ds[var].loc[dict(sensor_idx=idx)] = (
+                        ds[var].sel(sensor_idx=idx).where(valid)
+                    )
+
+        # Apply wind direction correction
+        offsets = get_wind_dir_offsets(deployment_metadata_path)
+        if offsets:
+            _logger.info("Applying wind direction corrections...")
+            ds = apply_wind_direction_correction(ds, offsets, _logger)
+        else:
+            _logger.info("No wind direction offsets found in deployment metadata")
+
     # Generate output filename and save
     site_name = file_path.stem  # Use filename for output file naming
     _save_pace_netcdf(ds, dir_out, metadata, time_coord_name, site_name)
+
+
+def merge_sites(
+    site_datasets: dict[str, xr.Dataset],
+    target_site_id: str,
+    join: str = "inner",
+) -> xr.Dataset:
+    """
+    Merge multiple colocated site datasets into a single site.
+
+    Sensors at the same height are averaged. Sensors at unique heights
+    are preserved as-is.
+
+    Parameters
+    ----------
+    site_datasets : dict[str, xr.Dataset]
+        Mapping of source site names to datasets, e.g. {"G03a": ds_a, "G03b": ds_b}
+    target_site_id : str
+        Site ID for merged result, e.g. "G03"
+    join : str
+        "inner" (default): only overlapping time period
+        "outer": union of all time periods (NaN-filled gaps)
+
+    Returns
+    -------
+    xr.Dataset
+        Merged dataset with sensor_idx structure
+    """
+    if not site_datasets:
+        raise ValueError("site_datasets cannot be empty")
+
+    if len(site_datasets) < 2:
+        raise ValueError("merge_sites requires at least 2 datasets to merge")
+
+    source_sites = list(site_datasets.keys())
+    _logger.info(f"Merging sites: {', '.join(source_sites)} -> {target_site_id}")
+
+    # Collect all sensors with their source site and metadata
+    all_sensors = []
+    for source_site, ds in site_datasets.items():
+        if "sensor_idx" not in ds.dims:
+            raise ValueError(
+                f"Dataset for {source_site} does not have sensor_idx structure"
+            )
+
+        for i in range(len(ds.sensor_idx)):
+            sensor_ds = ds.isel(sensor_idx=i)
+            height = (
+                str(sensor_ds.height.values)
+                if "height" in sensor_ds.coords
+                else "unknown"
+            )
+            sensor_id = (
+                str(sensor_ds.sensor_id.values)
+                if "sensor_id" in sensor_ds.coords
+                else f"unknown_{i}"
+            )
+
+            all_sensors.append(
+                {
+                    "source_site": source_site,
+                    "height": height,
+                    "sensor_id": sensor_id,
+                    "dataset": sensor_ds,
+                }
+            )
+
+    # Group sensors by height
+    sensors_by_height = {}
+    for sensor in all_sensors:
+        height = sensor["height"]
+        if height not in sensors_by_height:
+            sensors_by_height[height] = []
+        sensors_by_height[height].append(sensor)
+
+    # Process each height group
+    processed_datasets = []
+
+    for height, sensors in sensors_by_height.items():
+        if len(sensors) == 1:
+            # Single sensor at this height - preserve as-is, update site_id
+            _logger.info(
+                f"  Preserving single sensor at height {height} from {sensors[0]['source_site']}"
+            )
+            sensor_ds = sensors[0]["dataset"]
+
+            # Create dataset with updated site_id
+            processed_ds = _create_single_sensor_dataset(sensor_ds, target_site_id)
+            processed_datasets.append(processed_ds)
+        else:
+            # Multiple sensors at this height - average them
+            _logger.info(f"  Averaging {len(sensors)} sensors at height {height}:")
+
+            # Log statistics for each sensor being averaged
+            sensor_stats = []
+            for sensor in sensors:
+                sensor_ds = sensor["dataset"]
+                temp_values = sensor_ds["temp_c"].values
+                valid_mask = ~np.isnan(temp_values)
+                valid_temps = temp_values[valid_mask]
+
+                if len(valid_temps) > 0:
+                    stats = {
+                        "sensor_id": sensor["sensor_id"],
+                        "source_site": sensor["source_site"],
+                        "mean": np.mean(valid_temps),
+                        "std": np.std(valid_temps),
+                        "n": len(valid_temps),
+                    }
+                    sensor_stats.append(stats)
+                    _logger.info(
+                        f"    {sensor['source_site']} sensor {sensor['sensor_id']}: "
+                        f"mean={stats['mean']:.2f}C, std={stats['std']:.2f}C, n={stats['n']}"
+                    )
+
+            # Calculate correlation if we have exactly 2 sensors
+            if len(sensors) == 2:
+                _log_sensor_correlation(sensors)
+
+            # Average the sensors
+            averaged_ds = _average_sensors_at_height(
+                sensors, target_site_id, height, join
+            )
+            processed_datasets.append(averaged_ds)
+
+    # Concatenate all processed datasets along sensor_idx
+    if not processed_datasets:
+        raise ValueError("No valid data after processing")
+
+    merged_ds = xr.concat(
+        processed_datasets,
+        dim="sensor_idx",
+        data_vars="all",
+        coords="all",
+        join="outer",
+    )
+
+    # Fix sensor_idx to be sequential
+    new_sensor_idx = list(range(len(merged_ds.sensor_idx)))
+    merged_ds = merged_ds.assign_coords(sensor_idx=new_sensor_idx)
+
+    # Update global attributes
+    merged_ds.attrs.update(
+        {
+            "site_name": target_site_id,
+            "merged_from": ", ".join(source_sites),
+            "merge_join": join,
+            "n_sensors": len(merged_ds.sensor_idx),
+            "structure": "sensor_idx x datetime",
+        }
+    )
+
+    _logger.info(f"  Merged result: {len(merged_ds.sensor_idx)} sensors")
+
+    return merged_ds
+
+
+def _create_single_sensor_dataset(
+    sensor_ds: xr.DataArray, target_site_id: str
+) -> xr.Dataset:
+    """
+    Create a dataset from a single sensor with updated site_id.
+
+    Parameters
+    ----------
+    sensor_ds : xr.DataArray
+        Single sensor dataset (already indexed by sensor_idx)
+    target_site_id : str
+        New site ID to assign
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with sensor_idx dimension restored and site_id updated
+    """
+    # Get datetime coordinate name
+    datetime_coord = (
+        "datetime_utc" if "datetime_utc" in sensor_ds.coords else "datetime"
+    )
+
+    # Build data variables
+    data_vars = {}
+    if "temp_c" in sensor_ds:
+        data_vars["temp_c"] = (
+            ["sensor_idx", datetime_coord],
+            sensor_ds["temp_c"].values.reshape(1, -1),
+        )
+    if "intensity_lux" in sensor_ds:
+        data_vars["intensity_lux"] = (
+            ["sensor_idx", datetime_coord],
+            sensor_ds["intensity_lux"].values.reshape(1, -1),
+        )
+
+    # Build coordinates
+    coords = {
+        "sensor_idx": [0],
+        datetime_coord: sensor_ds[datetime_coord].values,
+        "site_id": ("sensor_idx", [target_site_id]),
+        "height": (
+            "sensor_idx",
+            [str(sensor_ds.height.values) if "height" in sensor_ds.coords else ""],
+        ),
+        "shielding": (
+            "sensor_idx",
+            [
+                str(sensor_ds.shielding.values)
+                if "shielding" in sensor_ds.coords
+                else ""
+            ],
+        ),
+        "sensor_type": (
+            "sensor_idx",
+            [
+                str(sensor_ds.sensor_type.values)
+                if "sensor_type" in sensor_ds.coords
+                else ""
+            ],
+        ),
+        "sensor_id": (
+            "sensor_idx",
+            [
+                str(sensor_ds.sensor_id.values)
+                if "sensor_id" in sensor_ds.coords
+                else ""
+            ],
+        ),
+        "sensor_generation": (
+            "sensor_idx",
+            [
+                str(sensor_ds.sensor_generation.values)
+                if "sensor_generation" in sensor_ds.coords
+                else ""
+            ],
+        ),
+        "elevation": (
+            "sensor_idx",
+            [
+                float(sensor_ds.elevation.values)
+                if "elevation" in sensor_ds.coords
+                else np.nan
+            ],
+        ),
+        "latitude": (
+            "sensor_idx",
+            [
+                float(sensor_ds.latitude.values)
+                if "latitude" in sensor_ds.coords
+                else np.nan
+            ],
+        ),
+        "longitude": (
+            "sensor_idx",
+            [
+                float(sensor_ds.longitude.values)
+                if "longitude" in sensor_ds.coords
+                else np.nan
+            ],
+        ),
+    }
+
+    return xr.Dataset(data_vars, coords=coords)
+
+
+def _log_sensor_correlation(sensors: list) -> None:
+    """Log correlation coefficient between two sensors."""
+    ds1 = sensors[0]["dataset"]
+    ds2 = sensors[1]["dataset"]
+
+    datetime_coord = "datetime_utc" if "datetime_utc" in ds1.coords else "datetime"
+
+    # Align time arrays
+    common_times = np.intersect1d(
+        ds1[datetime_coord].values, ds2[datetime_coord].values
+    )
+
+    if len(common_times) > 10:
+        # Get temperature values at common times
+        temp1 = ds1["temp_c"].sel({datetime_coord: common_times}).values
+        temp2 = ds2["temp_c"].sel({datetime_coord: common_times}).values
+
+        # Remove NaN pairs
+        valid_mask = ~(np.isnan(temp1) | np.isnan(temp2))
+        temp1_valid = temp1[valid_mask]
+        temp2_valid = temp2[valid_mask]
+
+        if len(temp1_valid) > 10:
+            correlation = np.corrcoef(temp1_valid, temp2_valid)[0, 1]
+            _logger.info(f"    Correlation coefficient: {correlation:.3f}")
+
+
+def _average_sensors_at_height(
+    sensors: list,
+    target_site_id: str,
+    height: str,
+    join: str,
+) -> xr.Dataset:
+    """
+    Average multiple sensors at the same height into a single sensor.
+
+    Parameters
+    ----------
+    sensors : list
+        List of sensor dictionaries with 'dataset' keys
+    target_site_id : str
+        Site ID for the result
+    height : str
+        Height of the sensors
+    join : str
+        "inner" or "outer" for time alignment
+
+    Returns
+    -------
+    xr.Dataset
+        Averaged sensor as dataset with sensor_idx structure
+    """
+    # Get datetime coordinate name from first sensor
+    first_ds = sensors[0]["dataset"]
+    datetime_coord = "datetime_utc" if "datetime_utc" in first_ds.coords else "datetime"
+
+    # Collect all time arrays
+    all_times = [s["dataset"][datetime_coord].values for s in sensors]
+
+    # Determine common time range based on join type
+    if join == "inner":
+        # Find intersection of all time arrays
+        common_times = all_times[0]
+        for times in all_times[1:]:
+            common_times = np.intersect1d(common_times, times)
+        target_times = np.sort(common_times)
+    else:  # outer
+        # Find union of all time arrays
+        target_times = np.unique(np.concatenate(all_times))
+        target_times = np.sort(target_times)
+
+    if len(target_times) == 0:
+        raise ValueError(f"No overlapping time points for sensors at height {height}")
+
+    # Collect aligned temperature and light data
+    temp_arrays = []
+    light_arrays = []
+
+    for sensor in sensors:
+        sensor_ds = sensor["dataset"]
+
+        # Create aligned arrays
+        temp_aligned = np.full(len(target_times), np.nan)
+        light_aligned = (
+            np.full(len(target_times), np.nan) if "intensity_lux" in sensor_ds else None
+        )
+
+        # Get sensor times and find indices in target times
+        sensor_times = sensor_ds[datetime_coord].values
+
+        for i, t in enumerate(target_times):
+            idx = np.where(sensor_times == t)[0]
+            if len(idx) > 0:
+                temp_aligned[i] = sensor_ds["temp_c"].values[idx[0]]
+                if light_aligned is not None and "intensity_lux" in sensor_ds:
+                    light_aligned[i] = sensor_ds["intensity_lux"].values[idx[0]]
+
+        temp_arrays.append(temp_aligned)
+        if light_aligned is not None:
+            light_arrays.append(light_aligned)
+
+    # Average the arrays (nanmean handles NaN values)
+    temp_averaged = np.nanmean(np.array(temp_arrays), axis=0)
+    light_averaged = (
+        np.nanmean(np.array(light_arrays), axis=0) if light_arrays else None
+    )
+
+    # Build the output dataset
+    data_vars = {
+        "temp_c": (["sensor_idx", datetime_coord], temp_averaged.reshape(1, -1)),
+    }
+    if light_averaged is not None:
+        data_vars["intensity_lux"] = (
+            ["sensor_idx", datetime_coord],
+            light_averaged.reshape(1, -1),
+        )
+
+    # Create merged sensor_id from all contributing sensors
+    merged_sensor_ids = "+".join([s["sensor_id"] for s in sensors])
+
+    # Get metadata from first sensor (they should be similar)
+    first_sensor_ds = sensors[0]["dataset"]
+
+    coords = {
+        "sensor_idx": [0],
+        datetime_coord: target_times,
+        "site_id": ("sensor_idx", [target_site_id]),
+        "height": ("sensor_idx", [height]),
+        "shielding": (
+            "sensor_idx",
+            [
+                str(first_sensor_ds.shielding.values)
+                if "shielding" in first_sensor_ds.coords
+                else ""
+            ],
+        ),
+        "sensor_type": (
+            "sensor_idx",
+            [
+                str(first_sensor_ds.sensor_type.values)
+                if "sensor_type" in first_sensor_ds.coords
+                else ""
+            ],
+        ),
+        "sensor_id": ("sensor_idx", [merged_sensor_ids]),
+        "sensor_generation": (
+            "sensor_idx",
+            [
+                str(first_sensor_ds.sensor_generation.values)
+                if "sensor_generation" in first_sensor_ds.coords
+                else ""
+            ],
+        ),
+        "elevation": (
+            "sensor_idx",
+            [
+                float(first_sensor_ds.elevation.values)
+                if "elevation" in first_sensor_ds.coords
+                else np.nan
+            ],
+        ),
+        "latitude": (
+            "sensor_idx",
+            [
+                float(first_sensor_ds.latitude.values)
+                if "latitude" in first_sensor_ds.coords
+                else np.nan
+            ],
+        ),
+        "longitude": (
+            "sensor_idx",
+            [
+                float(first_sensor_ds.longitude.values)
+                if "longitude" in first_sensor_ds.coords
+                else np.nan
+            ],
+        ),
+    }
+
+    return xr.Dataset(data_vars, coords=coords)

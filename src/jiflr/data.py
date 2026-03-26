@@ -9,7 +9,7 @@ Created: 6/13/24 @ 16:39
 Project: jif_lapse_rate
 """
 
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Union
 
 import pandas as pd
 import numpy as np
@@ -19,7 +19,7 @@ from tqdm import tqdm
 import warnings
 
 from jiflr import ROOT
-from jiflr.utils import get_deployment_periods, filter_by_deployment_periods
+from jiflr.utils import get_deployment_periods, apply_deployment_mask
 
 
 # Site groupings for analysis
@@ -160,60 +160,104 @@ def unstack_sensor_idx(
     >>> temp_data = unstacked.temp_c.sel(site_id='A01', height='2m')
     """
     if coords is None:
-        coords = ["site_id", "height", "shielding"]
+        coords = ["site_id", "height", "shielding", "sensor_type"]
 
     ds_indexed = ds.set_index(sensor_idx=coords)
-    ds_unstacked = ds_indexed.unstack(
+
+    # Check for true duplicates: same key with real data in the same variable
+    mi = ds_indexed.indexes["sensor_idx"]
+    dupes_mask = mi.duplicated(keep=False)
+    if dupes_mask.any():
+        ds_dupes = ds_indexed.isel(sensor_idx=dupes_mask)
+        for var in ds_dupes.data_vars:
+            # Count non-NaN entries per unique key
+            has_data = (~ds_dupes[var].isnull()).groupby("sensor_idx").sum()
+            conflicts = has_data > 1
+            if conflicts.any():
+                raise ValueError(
+                    f"Variable '{var}' has real data in multiple rows with the same "
+                    f"sensor_idx key. These are true duplicates that cannot be safely "
+                    f"collapsed:\n{has_data.where(conflicts).dropna('sensor_idx')}"
+                )
+
+    ds_deduped = ds_indexed.groupby("sensor_idx").mean(skipna=True)
+    ds_unstacked = ds_deduped.unstack(
         "sensor_idx", fill_value=fill_value, sparse=sparse
     )
     if squeeze:
         ds_unstacked = ds_unstacked.squeeze()
-        # Only sortby coords that still exist
         coords = [c for c in coords if c in ds_unstacked.dims]
 
     return ds_unstacked.sortby(coords)
 
 
-def load_netcdf_with_masking(
-    nc_file: Path,
-    csv_deployment_path: Path,
-    use_csv_masking: bool = True,
-    apply_mask_to_data: bool = False,
-) -> Optional[Dict[str, Any]]:
+def merge_sensor_datasets(
+    ds1: Union[xr.Dataset, xr.DataArray],
+    ds2: Union[xr.Dataset, xr.DataArray],
+    join: Optional[str] = "outer",
+) -> Union[xr.Dataset, xr.DataArray]:
     """
-    Load a single NetCDF file with optional deployment masking.
+    Merge two sensor datasets or dataarrays along the sensor_idx dimension,
+    preserving all sensors from both inputs even when sensor_idx values overlap.
+
+    sensor_idx values are reassigned to a contiguous integer range so that
+    sensors from ds1 and ds2 are always kept separate regardless of their
+    original indices.
 
     Parameters
     ----------
-    nc_file : Path
-        Path to NetCDF file
-    csv_deployment_path : Path
-        Path to deployment_periods.csv
-    use_csv_masking : bool
-        Whether to apply CSV-based deployment masking
-    apply_mask_to_data : bool
-        If True, return only deployed data (reduces dataset)
-        If False, return full dataset with deployed_mask array
+    ds1 : xr.Dataset or xr.DataArray
+        First xarray object with sensor_idx dimension.
+    ds2 : xr.Dataset or xr.DataArray
+        Second xarray object with sensor_idx dimension.
+    join : str, optional
+        How to handle datetime alignment across inputs. 'outer' takes the
+        union of all datetimes (filling gaps with NaN), 'inner' keeps only
+        the overlapping range (default: 'outer').
 
     Returns
     -------
-    dict or None
-        Dictionary containing:
-        - 'dataset': xarray Dataset
-        - 'site_name': str
-        - 'sensor_height': str
-        - 'sensor_id': str
-        - 'file': str (filename)
-        - 'deployed_mask': np.ndarray (if use_csv_masking=True and apply_mask_to_data=False)
-        - 'times': np.ndarray (if apply_mask_to_data=True, only deployed times)
-        - 'temps': np.ndarray (if apply_mask_to_data=True, only deployed temps)
+    xr.Dataset or xr.DataArray
+        Object of the same type as the inputs with all sensors from both
+        inputs concatenated along sensor_idx, with sensor_idx reassigned
+        to 0..n_total-1.
 
-    Returns None if file cannot be loaded or has insufficient data
+    Raises
+    ------
+    TypeError
+        If ds1 and ds2 are not the same type.
+
+    Examples
+    --------
+    Merge two datasets, keeping all time steps:
+    >>> merged = merge_sensor_datasets(ds1, ds2)
+
+    Merge two dataarrays, keeping only the overlapping time window:
+    >>> merged = merge_sensor_datasets(da1, da2, join='inner')
+    """
+    if type(ds1) is not type(ds2):
+        raise TypeError(
+            f"ds1 and ds2 must be the same type, got {type(ds1)} and {type(ds2)}."
+        )
+
+    n1 = ds1.sizes["sensor_idx"]
+    n2 = ds2.sizes["sensor_idx"]
+
+    ds1 = ds1.assign_coords(sensor_idx=np.arange(n1))
+    ds2 = ds2.assign_coords(sensor_idx=np.arange(n1, n1 + n2))
+
+    return xr.concat([ds1, ds2], dim="sensor_idx", join=join)
+
+
+def _load_netcdf(nc_file: Path) -> Optional[Dict[str, Any]]:
+    """
+    Load a single NetCDF file and extract sensor metadata.
+
+    Returns None if the file cannot be loaded or has insufficient data.
     """
     try:
         ds = xr.open_dataset(nc_file)
 
-        # Extract metadata from sensor_idx structure (REQUIRED)
         if "sensor_idx" not in ds.dims:
             raise ValueError(
                 f"File {nc_file.name} does not have sensor_idx structure. "
@@ -223,7 +267,6 @@ def load_netcdf_with_masking(
         if len(ds.sensor_idx) == 0:
             return None
 
-        # Extract from coordinates (single sensor per file)
         sensor_idx = 0
         site_name = (
             ds.site_id.values[sensor_idx] if "site_id" in ds.coords else "Unknown"
@@ -235,58 +278,19 @@ def load_netcdf_with_masking(
             ds.sensor_id.values[sensor_idx] if "sensor_id" in ds.coords else "Unknown"
         )
 
-        # Get temperature data with sensor_idx structure: (sensor_idx, datetime)
         datetime_coord = "datetime" if "datetime" in ds.coords else "datetime_utc"
         temp_data = ds["temp_c"].isel(sensor_idx=0).dropna(datetime_coord)
 
-        if len(temp_data) < 10:  # Require minimum data
+        if len(temp_data) < 10:
             return None
 
-        result = {
+        return {
             "dataset": ds,
             "site_name": site_name,
             "sensor_height": sensor_height,
             "sensor_id": sensor_id,
             "file": nc_file.name,
         }
-
-        # Apply deployment masking if requested
-        if use_csv_masking:
-            try:
-                # Get deployment periods for this site
-                deployment_periods_dict = get_deployment_periods(
-                    site_name, csv_deployment_path
-                )
-                deployment_periods = deployment_periods_dict.get(site_name, [])
-
-                if deployment_periods:
-                    if apply_mask_to_data:
-                        # Apply mask to entire dataset (all data variables)
-                        ds_filtered = filter_by_deployment_periods(
-                            ds, deployment_periods, return_mask=False
-                        )
-                        result["dataset"] = ds_filtered
-                    else:
-                        # Keep full dataset with mask
-                        deployed_mask = filter_by_deployment_periods(
-                            ds, deployment_periods, return_mask=True
-                        )
-                        result["deployed_mask"] = deployed_mask
-                else:
-                    # If no deployment periods found, assume all data is deployed
-                    deployed_mask = np.ones(len(ds[datetime_coord]), dtype=bool)
-                    if not apply_mask_to_data:
-                        result["deployed_mask"] = deployed_mask
-            except Exception as e:
-                # If deployment period lookup fails, warn and assume all data is deployed
-                warnings.warn(
-                    f"Failed to get deployment periods for site {site_name}: {e}. Assuming all data is deployed."
-                )
-                deployed_mask = np.ones(len(ds[datetime_coord]), dtype=bool)
-                if not apply_mask_to_data:
-                    result["deployed_mask"] = deployed_mask
-
-        return result
 
     except Exception as e:
         print(f"Error loading {nc_file}: {e}")
@@ -321,7 +325,7 @@ def load_all_pendant_data(
         Whether to drop the 'intensity_lux' data variable from loaded datasets (default: False)
     apply_mask_to_data : bool, optional
         If True, apply deployment masks during loading and return filtered datasets.
-        If False, return full datasets with separate deployed_mask arrays (default: False)
+        If False, return full datasets without masking (default: False)
 
     Returns
     -------
@@ -337,12 +341,7 @@ def load_all_pendant_data(
     site_data = {}
 
     for nc_file in tqdm(netcdf_files, desc="Loading NetCDF files"):
-        sensor_info = load_netcdf_with_masking(
-            nc_file,
-            csv_deployment_path,
-            use_csv_masking,
-            apply_mask_to_data=apply_mask_to_data,
-        )
+        sensor_info = _load_netcdf(nc_file)
 
         if sensor_info is None:
             continue
@@ -353,6 +352,21 @@ def load_all_pendant_data(
         # Filter by required heights if specified
         if required_heights and sensor_height not in required_heights:
             continue
+
+        # Apply deployment masking if requested
+        if use_csv_masking and apply_mask_to_data and site_name != "Unknown":
+            try:
+                sensor_info["dataset"] = apply_deployment_mask(
+                    sensor_info["dataset"],
+                    site_name,
+                    csv_deployment_path,
+                    ignore_missing=True,
+                )
+            except Exception as e:
+                warnings.warn(
+                    f"Failed to apply deployment mask for site {site_name}: {e}. "
+                    "Returning unmasked data."
+                )
 
         # Create site key
         if site_name == "Unknown":
@@ -422,7 +436,7 @@ def group_by_site_name(netcdf_data: List[Dict]) -> Dict[str, List[Dict]]:
     Parameters
     ----------
     netcdf_data : list of dict
-        List of sensor info dictionaries from load_netcdf_with_masking
+        List of sensor info dictionaries from _load_netcdf
 
     Returns
     -------
@@ -677,147 +691,6 @@ def resample_to_hourly(
     deployed_mask_hourly = np.ones(len(times_hourly), dtype=bool)
 
     return times_hourly, temp_arrays_hourly, deployed_mask_hourly
-
-
-# ============================================================================
-# DEPLOYMENT MASKING FUNCTIONS
-# ============================================================================
-
-
-def apply_combined_deployment_mask(
-    datasets: List[xr.Dataset],
-    sensor_infos: List[Dict],
-    times_valid: np.ndarray,
-    temp_arrays: List[np.ndarray],
-    csv_deployment_path: Path,
-) -> np.ndarray:
-    """
-    Apply deployment masking to multiple sensors (all must be deployed).
-
-    Parameters
-    ----------
-    datasets : list of xarray.Dataset
-        Datasets for each sensor
-    sensor_infos : list of dict
-        Sensor info dicts (must have 'file' key for CSV matching)
-    times_valid : np.ndarray
-        Valid time points
-    temp_arrays : list of np.ndarray
-        Temperature arrays for each sensor
-    csv_deployment_path : Path
-        Path to deployment_periods.csv
-
-    Returns
-    -------
-    np.ndarray of bool
-        Combined deployment mask (True where ALL sensors are deployed)
-
-    Example
-    -------
-    >>> mask = apply_combined_deployment_mask(
-    ...     [ds1_1m, ds1_2m, ds2_1m, ds2_2m],
-    ...     [info1_1m, info1_2m, info2_1m, info2_2m],
-    ...     times, temps, csv_path
-    ... )
-    """
-    deployed_masks = []
-
-    for ds, sensor_info, temp_array in zip(datasets, sensor_infos, temp_arrays):
-        site_name = ds.attrs.get("site_name", "Unknown")
-        height = ds.attrs.get("sensor_height", "Unknown")
-
-        try:
-            # Get deployment periods for this site
-            deployment_periods_dict = get_deployment_periods(
-                site_name, csv_deployment_path
-            )
-            deployment_periods = deployment_periods_dict.get(site_name, [])
-
-            if deployment_periods:
-                # Create a temporary DataArray for masking
-                temp_da = xr.DataArray(
-                    temp_array,
-                    coords={"datetime": pd.to_datetime(times_valid)},
-                    dims=["datetime"],
-                )
-                deployed = filter_by_deployment_periods(
-                    temp_da, deployment_periods, return_mask=True
-                )
-                deployed_masks.append(deployed)
-            else:
-                # If no deployment periods found, assume all deployed
-                deployed_masks.append(np.ones(len(times_valid), dtype=bool))
-        except Exception as e:
-            # If deployment period lookup fails, warn and assume all deployed
-            warnings.warn(
-                f"Failed to get deployment periods for site {site_name}: {e}. Assuming all data is deployed."
-            )
-            deployed_masks.append(np.ones(len(times_valid), dtype=bool))
-
-    # Combine masks: all sensors must be deployed
-    if deployed_masks:
-        combined_mask = np.all(deployed_masks, axis=0)
-    else:
-        combined_mask = np.ones(len(times_valid), dtype=bool)
-
-    return combined_mask
-
-
-def mask_site_data(
-    site_data: Dict[str, Dict], csv_deployment_path: Path
-) -> Dict[str, Dict]:
-    """
-    Apply deployment masking to all sensors in site_data dictionary.
-
-    Adds 'deployed_mask' key to each sensor info dict.
-
-    Parameters
-    ----------
-    site_data : dict
-        Nested dict: {site_name: {height: sensor_info}}
-    csv_deployment_path : Path
-        Path to deployment_periods.csv
-
-    Returns
-    -------
-    dict
-        Same structure with 'deployed_mask' added to each sensor
-
-    Example
-    -------
-    >>> site_data = load_all_pendant_data(processed_dir, csv_path, use_csv_masking=False)
-    >>> site_data = mask_site_data(site_data, csv_path)
-    >>> mask = site_data['A01']['2m']['deployed_mask']
-    """
-    for site_name, sensors in site_data.items():
-        for height, sensor_info in sensors.items():
-            if "dataset" not in sensor_info:
-                continue
-
-            ds = sensor_info["dataset"]
-            temp_data = ds["temp_c"].dropna("datetime")
-
-            site_name_attr = ds.attrs.get("site_name", "Unknown")
-
-            try:
-                # Get deployment periods for this site
-                deployment_periods_dict = get_deployment_periods(
-                    site_name_attr, csv_deployment_path
-                )
-                deployment_periods = deployment_periods_dict.get(site_name_attr, [])
-
-                if deployment_periods:
-                    deployed_mask = filter_by_deployment_periods(
-                        temp_data, deployment_periods, return_mask=True
-                    )
-                    sensor_info["deployed_mask"] = deployed_mask
-            except Exception as e:
-                # If deployment period lookup fails, warn and skip masking
-                warnings.warn(
-                    f"Failed to get deployment periods for site {site_name_attr}: {e}. Skipping masking for this sensor."
-                )
-
-    return site_data
 
 
 # ============================================================================
@@ -1196,3 +1069,130 @@ def load_and_merge_lvl0_data(
 
     except Exception as e:
         raise ValueError(f"Failed to merge datasets: {e}")
+
+
+# ── Overlap / completeness ────────────────────────────────────────────────────
+
+
+def get_overlap_window(da: xr.DataArray) -> xr.DataArray:
+    """
+    Restrict *da* to timesteps where every sensor has valid data.
+
+    This is the shared "overlap window" used by all PDD calculations to
+    ensure observed totals are comparable across sites.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Temperature array with dimensions (datetime, sensor_idx).
+
+    Returns
+    -------
+    xr.DataArray
+        *da* sliced to the complete-data timesteps only.
+    """
+    has_data = da.notnull().all(dim="sensor_idx")
+    return da.sel(datetime=has_data)
+
+
+def overlap_date_range(da: xr.DataArray) -> tuple[str, str, int]:
+    """
+    Extract (start_str, end_str, n_days) from a DataArray's datetime extent.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Any DataArray with a datetime coordinate.
+
+    Returns
+    -------
+    tuple of (str, str, int)
+        ISO date strings for the first and last timestep, and the number
+        of whole days between them.
+    """
+    t0 = pd.Timestamp(da.datetime.values[0])
+    t1 = pd.Timestamp(da.datetime.values[-1])
+    return t0.strftime("%Y-%m-%d"), t1.strftime("%Y-%m-%d"), (t1 - t0).days
+
+
+# ── Period selection ──────────────────────────────────────────────────────────
+
+
+def get_period_da(
+    da: xr.DataArray,
+    period: str,
+    period_masks: dict[str, xr.DataArray | None],
+) -> xr.DataArray:
+    """
+    Return *da* filtered to the sensors belonging to *period*.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Full temperature DataArray with a sensor_idx dimension.
+    period : str
+        Key into *period_masks* (e.g. "p1", "p2", "p3").
+    period_masks : dict
+        Maps period name → boolean DataArray over sensor_idx, or None to
+        return all sensors.  Example::
+
+            period_masks = {
+                "p1": None,
+                "p2": (~da.site_id.str.startswith("B"))
+                      & (~da.site_id.isin(["A10", "G04"])),
+                "p3": da.site_id.isin(P3_SITES),
+            }
+
+    Returns
+    -------
+    xr.DataArray
+        *da* with sensor_idx filtered to the period's sites.
+    """
+    mask = period_masks.get(period)
+    if mask is None:
+        return da
+    return da.sel(sensor_idx=mask)
+
+
+# ── Observed PDD over overlap window ─────────────────────────────────────────
+
+
+def get_overlap_pdd(
+    da: xr.DataArray,
+    threshold: float = 0.0,
+) -> tuple[pd.DataFrame, str, str, int]:
+    """
+    Compute observed PDD over the shared overlap window.
+
+    Combines get_overlap_window + sum_observed_pdds into the single call
+    needed for most analyses.  Temporal scaling is handled automatically
+    via sum_observed_pdds.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Temperature array (datetime, sensor_idx).  Should already be
+        filtered to the desired period/sites before calling.
+    threshold : float, optional
+        Only temperatures above this value contribute (default 0 °C).
+
+    Returns
+    -------
+    df : pd.DataFrame
+        Columns: pdd, elevation.  Indexed by site_id.
+    start_str, end_str : str
+        ISO date strings for the overlap window extent.
+    n_days : int
+        Whole days spanned by the overlap window.
+    """
+    da_overlap = get_overlap_window(da)
+
+    # Apply threshold then delegate scaling to sum_observed_pdds
+    da_thresh = da_overlap.where(da_overlap > threshold, other=0)
+    pdd_series = sum_observed_pdds(da_thresh)  # indexed by site_id
+
+    elev = da_overlap.coords["elevation"].to_series().rename_axis("site_id")
+    df = pd.DataFrame({"pdd": pdd_series, "elevation": elev})
+
+    start, end, n_days = overlap_date_range(da_overlap)
+    return df, start, end, n_days

@@ -19,6 +19,7 @@ import xarray as xr
 
 from jiflr import ROOT
 from jiflr.logging import indent, key_value, setup_pipeline_logging, subheader
+from jiflr.qc_plots import create_all_qc_plots
 
 
 def interpolate_to_5min(ds):
@@ -79,6 +80,13 @@ def process_individual_file(input_path, output_dir, logger):
     # Load the dataset
     ds = xr.open_dataset(input_path)
 
+    # Apply wind direction masking (before resampling)
+    # Only call for datasets that have wind data
+    if 'wind_direction' in ds.data_vars and 'wind_speed_avg' in ds.data_vars:
+        from jiflr.pipeline import mask_wind_direction_by_speed
+        logger.info(indent("Applying wind direction masking based on wind speed...", level=2))
+        ds = mask_wind_direction_by_speed(ds, wind_speed_threshold=0.5, logger=logger)
+
     # Resample to 5-minute intervals
     ds_lvl1 = interpolate_to_5min(ds)
 
@@ -89,6 +97,14 @@ def process_individual_file(input_path, output_dir, logger):
     # Save processed file
     ds_lvl1.to_netcdf(output_path)
     logger.info(indent(f"Saved {output_filename}", level=2))
+
+    # Create QC plots
+    create_all_qc_plots(
+        ds=ds_lvl1,
+        output_dir=output_dir,
+        filename_prefix=output_filename.replace(".nc", ""),
+        logger=logger,
+    )
 
     ds.close()
 
@@ -229,15 +245,6 @@ def main():
         except Exception as e:
             logger.error(f"Error processing {lvl0_file.name}: {e}")
             continue
-
-    # Create combined file
-    if processed_datasets:
-        logger.info(subheader("Creating combined file"))
-        combined_output = output_dir / "lvl1_combined.nc"
-        try:
-            combine_datasets(processed_datasets, combined_output, logger)
-        except Exception as e:
-            logger.error(f"Error creating combined file: {e}")
 
     # Close all datasets
     for ds in processed_datasets:

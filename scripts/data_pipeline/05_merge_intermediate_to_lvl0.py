@@ -22,6 +22,7 @@ from tqdm import tqdm
 
 from jiflr import ROOT
 from jiflr.logging import item, key_value, setup_pipeline_logging, subheader
+from jiflr.qc_plots import create_all_qc_plots
 
 
 def _fix_string_coordinate_lengths(ds, other_ds):
@@ -233,6 +234,14 @@ def process_directory(input_dir, output_file, logger):
     logger.info(key_value("Saving to", str(output_file)))
     merged_ds.to_netcdf(output_file)
 
+    # Create QC plots
+    create_all_qc_plots(
+        ds=merged_ds,
+        output_dir=output_file.parent,
+        filename_prefix=output_file.stem,
+        logger=logger,
+    )
+
     # Print summary
     n_sites = len(site_names)
     n_sensors = len(merged_ds.sensor_idx) if 'sensor_idx' in merged_ds.dims else 0
@@ -263,9 +272,16 @@ def main():
         logger.error(f"Input directory {base_dir} does not exist")
         exit(1)
 
-    # Process main/root directory
-    main_output = output_dir / "lvl0_main.nc"
+    # Process main/root directory (on-ice standard sites)
+    main_output = output_dir / "lvl0_on_ice.nc"
     process_directory(base_dir, main_output, logger)
+
+    # Output name mapping for subdirectories
+    OUTPUT_NAME_MAP = {
+        "intensive": "on_ice_intensive",
+        "off_ice": "off_ice",
+        # camp_wx stays as-is (no mapping needed)
+    }
 
     # Discover and process all subdirectories
     subdirs = [d for d in base_dir.iterdir() if d.is_dir()]
@@ -280,7 +296,8 @@ def main():
             nc_files = [f for f in subdir.glob("*.nc") if not f.name.startswith('.')]
 
             if nc_files:
-                subdir_output = output_dir / f"lvl0_{subdir.name}.nc"
+                output_name = OUTPUT_NAME_MAP.get(subdir.name, subdir.name)
+                subdir_output = output_dir / f"lvl0_{output_name}.nc"
                 process_directory(subdir, subdir_output, logger)
             else:
                 logger.info(f"Skipping {subdir.name} subdirectory (no NetCDF files found)")

@@ -26,7 +26,25 @@ import matplotlib.dates as mdates
 from jiflr import ROOT
 from jiflr.data import load_all_pendant_data
 from jiflr.logging import indent, key_value, setup_pipeline_logging, subheader
+from jiflr.pipeline import merge_sites
 from jiflr.utils import get_deployment_periods
+
+
+# =============================================================================
+# USER CONFIGURATION
+# =============================================================================
+# Configuration for merging colocated sites
+# Maps target site_id -> list of source site_ids to merge
+# Set to empty dict {} to disable colocated site merging
+COLOCATED_SITES = {
+    "G03": ["G03a", "G03b"],
+}
+
+# Join method for merging colocated sites:
+#   "inner": only overlapping time period (no NaN gaps)
+#   "outer": union of all time periods (NaN-filled gaps)
+COLOCATED_MERGE_JOIN = "inner"
+# =============================================================================
 
 
 def merge_site_data(site_data_dict):
@@ -147,7 +165,9 @@ def _extract_height_from_sensor(ds, height_key):
     return height if height else "unknown"
 
 
-def create_qc_plots(combined_ds, site_name, output_dir, deployment_periods=None, logger=None):
+def create_qc_plots(
+    combined_ds, site_name, output_dir, deployment_periods=None, logger=None
+):
     """
     Create quality control plots for a merged site dataset.
 
@@ -259,7 +279,9 @@ def create_qc_plots(combined_ds, site_name, output_dir, deployment_periods=None,
                         )
         except Exception as e:
             if logger:
-                logger.warning(f"Could not load deployment periods for {site_name}: {e}")
+                logger.warning(
+                    f"Could not load deployment periods for {site_name}: {e}"
+                )
             site_deployment_periods = []
 
     # Plot 1: Time series of temperature by sensor (full width)
@@ -575,7 +597,10 @@ def process_directory(input_dir, output_dir, csv_deployment_path, logger):
             else []
         )
         logger.info(
-            indent(f"Combined {n_sensors} sensors ({', '.join(sensor_heights)}) -> {data_points} time points", level=2)
+            indent(
+                f"Combined {n_sensors} sensors ({', '.join(sensor_heights)}) -> {data_points} time points",
+                level=2,
+            )
         )
 
 
@@ -603,9 +628,83 @@ def main():
 
     process_directory(main_input, main_output, csv_deployment_path, logger)
 
+    # Process colocated site merges if configured
+    if COLOCATED_SITES:
+        # Load deployment periods CSV for QC plotting
+        deployment_periods = None
+        if csv_deployment_path.exists():
+            try:
+                deployment_periods = pd.read_csv(csv_deployment_path)
+            except Exception as e:
+                logger.warning(f"Could not load deployment periods CSV: {e}")
+
+        for target_site, source_sites in COLOCATED_SITES.items():
+            logger.info(
+                subheader(
+                    f"Merging colocated sites: {', '.join(source_sites)} -> {target_site}"
+                )
+            )
+
+            # Load source site datasets
+            site_datasets = {}
+            for source_site in source_sites:
+                source_path = main_output / f"{source_site}.nc"
+                if source_path.exists():
+                    site_datasets[source_site] = xr.open_dataset(source_path)
+                    logger.info(
+                        indent(f"Loaded {source_site} from {source_path.name}", level=1)
+                    )
+                else:
+                    logger.warning(
+                        indent(f"Source file not found: {source_path}", level=1)
+                    )
+
+            if len(site_datasets) >= 2:
+                # Merge sites
+                merged_ds = merge_sites(
+                    site_datasets, target_site, join=COLOCATED_MERGE_JOIN
+                )
+
+                # Close source datasets before deleting
+                for ds in site_datasets.values():
+                    ds.close()
+
+                # Save merged dataset
+                output_path = main_output / f"{target_site}.nc"
+                merged_ds.to_netcdf(output_path)
+                logger.info(
+                    indent(f"Saved merged dataset: {output_path.name}", level=1)
+                )
+
+                # Delete source files
+                for source_site in source_sites:
+                    source_path = main_output / f"{source_site}.nc"
+                    if source_path.exists():
+                        source_path.unlink()
+                        logger.info(
+                            indent(f"Removed source file: {source_path.name}", level=1)
+                        )
+
+                    # Also remove source QC plots
+                    source_qc = main_output / "qc_plots" / f"{source_site}_qc.png"
+                    if source_qc.exists():
+                        source_qc.unlink()
+                        logger.info(
+                            indent(f"Removed source QC plot: {source_qc.name}", level=1)
+                        )
+
+                # Create QC plot for merged site
+                create_qc_plots(
+                    merged_ds, target_site, main_output, deployment_periods, logger
+                )
+            else:
+                logger.warning(
+                    f"Not enough source datasets found for {target_site} merge (need >= 2, got {len(site_datasets)})"
+                )
+
     # Process subdirectories
     # TODO: Make this procedural
-    subdirs = ["camp_wx", "intensive"]
+    subdirs = ["camp_wx", "on_ice_intensive", "off_ice", "on_ice"]
 
     for subdir in subdirs:
         subdir_input = input_base / subdir
