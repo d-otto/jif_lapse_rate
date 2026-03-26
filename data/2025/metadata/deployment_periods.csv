@@ -1,33 +1,59 @@
-site,site_elevation,deploy_date,deploy_time,pickup_date,pickup_time,abl_initial_cm,abl_final_cm,anchor_melted_out,base_melted_in,wx_notes,sfc_notes,sun_cup_notes,sun_cup_long_ax_lens,notes,retrieved_by,photos_by,approx_elev
-A01,982,1/1/25,00:00,7/18/25,15:44,,201,,,,,,,,,,TRUE
-A02,1109,1/1/25,00:00,7/18/25,17:26,,,,,,,,,,,,TRUE
-A03,1196,1/1/25,00:00,7/18/25,16:25,,,,,,,,,,,,TRUE
-A04,1237,1/1/25,00:00,7/27/25,16:00,,,,,,,,,approx pickup datetime,,,TRUE
-A05,1300,1/1/25,00:00,7/28/25,00:00,,,,,,,,,approx pickup datetime,,,TRUE
-A06,1544,1/1/25,00:00,8/3/25,00:00,,,,,,,,,approx pickup datetime,,,TRUE
-A07,1825,1/1/25,00:00,7/30/25,16:51,,,,,,,,,In AK time,,,TRUE
-A08,1767,1/1/25,00:00,7/28/25,16:28,,,,,,,,,,,,TRUE
-A10,1476,1/1/25,00:00,8/8/25,00:00,,,,,,,,,approx pickup datetime,,,TRUE
-B01,1097,1/1/25,00:00,7/7/25,00:00,,,,,,,,,approx pickup datetime,,,TRUE
-B02,1212,1/1/25,00:00,7/7/25,00:00,,,,,,,,,approx pickup datetime,,,TRUE
-B03,1209,1/1/25,00:00,7/7/25,00:00,,,,,,,,,approx pickup datetime,,,TRUE
-C02,1237,1/1/25,00:00,7/15/25,16:07,,,,,,,,,,,,TRUE
-D01,1333,1/1/25,00:00,7/17/25,12:41,,117,,,,,,,approx pickup datetime,,,TRUE
-D02,1406,1/1/25,00:00,7/16/25,14:41,,,,,,,,,,,,TRUE
-D04,1564,1/1/25,00:00,7/16/25,13:17,,,,,,,,,,,,TRUE
-E01,1477,1/1/25,00:00,7/16/25,21:30,,,,,,,,,,,,TRUE
-E03,1595,1/1/25,00:00,7/16/25,16:58,,,,,,,,,,,,TRUE
-E04,1584,1/1/25,00:00,7/16/25,16:15,,,,,,,,,,,,TRUE
-F03,1782,1/1/25,00:00,7/26/25,11:59,,,,,,,,,Approx pickup time. Sometime after F05.,,,TRUE
-F05,1793,1/1/25,00:00,7/26/25,13:28,,,,,,,,,,,,TRUE
-F06,1983,1/1/25,00:00,7/26/25,12:51,,,,,,,,,,,,TRUE
-G01,1128,1/1/25,00:00,7/18/25,16:57,,,,,,,,,,,,TRUE
-G02,1125,1/1/25,00:00,7/18/25,17:16,,,,,,,,,,,,TRUE
-G03,1110,1/1/25,00:00,7/18/25,17:42,,,,,,,,,,,,TRUE
-G04,1091,1/1/25,00:00,7/18/25,18:00,,,,,,,,,approx pickup datetime,,,TRUE
-Lee1,1701,,,7/28/25,16:22,,202,,,,,,,What timezone?,,,
-Divide,1858,,,7/30/25,16:06,,116,,,,,,,What timezone?,,,
-Windward1,1751,,,7/30/25,17:23,,153,,,,,,,,,,
-Moraine,,,,8/4/25,13:24,,,,,,,,,,,,
-Lee2,1400,,,8/4/25,14:54,,286,,,,,,,,,,
-Windward2,1405,,,7/30/25,00:00,,,,,,,,,approx pickup datetime,,,
+﻿site,latitude,longitude,site_elevation,deploy_date,deploy_time,pickup_date,pickup_time,abl_initial_cm,abl_final_cm,height_change,anchor_melted_out,base_melted_in,wx_notes,sfc_notes,sun_cup_long_ax_lens_cm,wind_dir_offset_deg,pickup_notes,notes,retrieved_by,photos_by,approx_elev
+A01,58.60366,-134.17993,982,6/20/25,15:45,7/18/25,15:44,81,201,120,FALSE,FALSE,"Blue sky, sunny, light breeze","Sun cups, melt runnels","55.9,38.1,35.6",,Anchor only 30 cm below sfc. Tilted towards NE. SE base pole melted out 20cm. N-S facing loose [base] pole shifted towards N,,Christina,Christina,TRUE
+A02,58.63437,-134.23695,1109,6/11/25,16:50,7/18/25,17:26,,,0,FALSE,TRUE,"Sunny, blue sky, some low clouds rolling in.",Lots of small sun cups,"33, 30, 39",,Based melted in towards NE ~30 cm. Thicker side of pole melted in.,,Christina,Christina,TRUE
+A03,58.6563,-134.27822,1196,6/21/25,18:30,7/18/25,16:25,,,0,FALSE,TRUE,"Sunny, blue sky","Small sun cups, no wind","32,25,36",,Tilted towards S ~ 30 deg. Both N facing poles melted out and approx 15 cm above sfc.,Anchor only 30 cm below sfc. Base melted in tilted towards the south,Christina,Christina,TRUE
+A04,58.66958,-134.3067,1237,6/21/25,18:00,7/27/25,14:55,,,0,FALSE,FALSE,"Sunny, blue sky",Small sun cups,"30, 42,50",,Station remained straight up,,Greg,Greg,TRUE
+A05,58.69179,-134.26079,1300,6/16/25,17:50,7/27/25,15:16,,,0,FALSE,FALSE,"Sunny, blue sky",Small sun cups,"30, 42,50",,Station remained straight up,,Greg,Greg,TRUE
+A06,58.7693,-134.19497,1544,6/16/25,16:49,8/2/25,14:16,,,0,FALSE,FALSE,"partly sunny, many medium height clouds, some low clouds","flat surface, many small-medium suncups","35,40,40",,"stand slightly tilted, not melted in",,Francis,Francis,TRUE
+A07,58.83711,-134.16882,1825,6/17/25,19:20,7/30/25,16:51,,,0,FALSE,FALSE,"Overcast, light precip plus occasional sun","Flat, shallow sun cups","20,30,25",,Measured sensor heights ~4 cm below nominal. Some damage on 100 cm sensor shielding,In AK time,Christina + Ali,Ali,TRUE
+A08,58.90988,-134.10559,1767,6/17/25,19:35,7/28/25,16:28,,,0,FALSE,FALSE,"Sunny, blue sky, light breeze",Lots of sun cups,"23,32,16",,Anchor 30 cm below sfc. Anchor bamboo broken.,,Christina + Margo,Christina,TRUE
+A10,58.99744,-134.11973,1476,6/17/25,16:15,8/8/25,00:00,,,0,,,,,,,,approx pickup datetime,,,TRUE
+B01,58.57443,-134.25014,1097,6/20/25,14:20,7/6/25,19:16,,,0,FALSE,FALSE,"Cloudy, light wind","Some wind blown snow, relatively flat. Smaller sun cups",30,,Wx station in great condition. some slight wear on foil over senors (in photos). no ablation stake,,Scott Braddock,Scott Braddock,TRUE
+B02,58.53802,-134.2998,1212,6/12/25,17:07,7/6/25,18:45,0,95.8,95.8,FALSE,FALSE,"Cloudy, light wind","Relatively flat, small sun cups","35,34,38",,Wx station in great condition. Anchor melted down 62.5 cm. ,,Scott Braddock,Scott Braddock,TRUE
+B03,58.5024,-134.33709,1209,6/12/25,16:45,7/6/25,18:04,100,236.5,136.5,FALSE,FALSE,"Very cloudy, very low vis","Relatively flat, small sun cups, site near crevasse (~1m from crack)","36,32,45",,Wx station in great condition. Sensors looked great. Base station sitting well on surface and ablation stake still verticle.,Initial ablation stake height is approx -- missing notes.,Scott Braddock,Scott Braddock,TRUE
+C02,58.62039,-134.31916,1237,6/20/25,17:10,7/14/25,16:07,79,165.5,86.5,FALSE,FALSE,"Partial clouds, light wind","relatively flat sun cups, wet snow",40,,10 degree tilt w/ sensors towards C-10 (east),,Francis + Margo,Francis,TRUE
+D01,58.68831,-134.38218,1333,6/21/25,17:20,7/17/25,12:41,6,117,111,TRUE,FALSE,"Partly cloudy, sunny",Small sun cups,"38.1, 30.48, 38.1",,Base stand pole towards south 15 cm above surface,,Christina,Christina,TRUE
+D02,58.68347,-134.44378,1406,6/21/25,13:25,7/16/25,14:41,20,116,96,FALSE,FALSE,"High clouds, no precip, no wind",A little bit of sun cupping,"22,35.5,28",,Small tilt towards west. Base melted in a bit towards west. East base pole ~15 cm above snowpack.,Sun cup inches converted to cm,Christina,Christina,TRUE
+D04,58.64266,-134.54149,1564,6/21/25,12:25,7/16/25,13:17,20,104,84,FALSE,FALSE,"High clouds, no precip, no wind","flat, tiny suncups",25.4,,Small tilt towards SE. Pic with snowmachine for scale,Sun cup inches converted to cm,Christina,Christina,TRUE
+E01,58.633,-134.41981,1477,6/21/25,16:35,7/16/25,21:30,16,109,93,FALSE,TRUE,"Evening sun, partly cloudly, light winds, no precip.",Sun cups but not deep. Small but many.,"38.1,30.5,28.0",,NE facing base pole melted in slightly. Slightly tilted to the north. Dead fly at base.,,Christina,Christina,TRUE
+E03,58.57856,-134.41147,1595,6/21/25,15:25,7/16/25,16:58,,,0,FALSE,TRUE,"High clouds, no precip, no wind","Flat, very shallow suncups",12.7,,"Base melted in 15 cm to the west. Tilted a little bit to the NW. W base poles ~15 cm melted in, E pole 5 cm above surface.",Sun cup inches converted to cm,Christina,Christina,TRUE
+E04,58.53996,-134.39298,1584,6/21/25,14:45,7/16/25,16:15,,,0,FALSE,TRUE,"High clouds, no precip, no wind","Flat, soft snow (I sink in more than at the other sites, ~20 cm). No sun cups",0,,"Based melted in 15 cm. Sensor pole pretty straight. Anchor only 30 cm buried, was able to recover everything",,Christina,Christina,TRUE
+F03,58.82171,-134.21209,1782,6/22/25,11:45,7/26/25,11:59,,,0,FALSE,TRUE,"Sunny, some high clouds","Very low slope angle, nearly flat/slight tilt to sensor. Some med sun cups.","27,29,29",,Anchor 368 cm to surf. Base melted in ~4 cm.,Approx pickup time. Sometime after F05?,Francis,Francis,TRUE
+F05,58.81264,-134.16386,1793,6/22/25,12:20,7/26/25,13:28,,,0,FALSE,TRUE,"Sunny, light wind, some high clouds","Relatively flat null on mathes main branch. Some sun cups, varied size","22, 40, 28",,Anchor 151 cm to surf. Base melted in slightly ~10 cm.,,Francis,Francis,TRUE
+F06,58.80668,-134.14089,1983,6/22/25,15:00,7/26/25,12:51,,,0,FALSE,FALSE,"Sunny, light wind, some high clouds","Slight lsope angle (~10 deg). Beginnings of small sun cups, near C8 nunatack","18, 19,28,23",,,,Francis,Francis,TRUE
+G01,58.62173,-134.26298,1128,6/22/25,18:30,7/18/25,16:57,,,0,FALSE,TRUE,"Sunny, blue sky, light breeze",Small sun cups,"36, 37, 33",,"Base melted in towards N, NE",,Christina,Christina,TRUE
+G02,58.62827,-134.25018,1125,6/22/25,18:50,7/18/25,17:16,,,0,FALSE,TRUE,"Sunny, blue sky, light breeze",Lots of small sun cups,"33, 39, 37",,All 4 base poles melted in ~10-15 cm. Stake straight up [no tilt].,,Christina,Christina,TRUE
+G03,58.64256,-134.22363,1110,6/23/25,05:30,7/18/25,17:42,,,0,TRUE,TRUE,"Blue sky, sunny, some low clouds rolling in",Lots of small sun cups,"25, 39, 31",,"Base melted in towards S. 100 cm sensors different [from normal], 2 sensors","Field notebook page is labelled A02, but notes 2 sensors at the 1m level,. Which makes this G03.",Christina,Wilder,TRUE
+G04,58.65039,-134.21077,1091,6/23/25,05:15:00,7/18/25,18:00,,,0,FALSE,TRUE,"Sunny, blue sky, no wind",Some huge sun cups with red algae,"113, 57,45",,Base melted in towards SW. Thicker poles again melted in more ~30cm. Full anchor retrieved.,"No pickup time listed, approx time used. Page labelled G03, but actually G04 because the G03 page was labelled A02, and G04 and G03 were swapped on the sensor bag labels.",Christina,Wilder,TRUE
+Lee1,58.93683,-134.10061,1701,6/17/25,19:00,7/28/25,16:22,62,202,140,FALSE,FALSE,"Blue sky, sunny, light breeze",Lots of sun cups,"36,27,39",18,[Sensor pole] straight up. Bracket direction 336 NW. Wind direction 205 SW @ 16:32 (canada time?).,What timezone?,Christina + Margo,Christina,
+divide,58.85757,-134.15845,1858,6/19/25,16:30,7/30/25,16:06,38,116,78,FALSE,TRUE,"Overcast, patches of blue sky, dry, light breeze",Shallow sun cups,"35, 40, 50",18,"""1st. sensor: height above snow surface: 57.5cm
+2nd: 109.5cm
+3rd: 157cm
+4th: 207.5cm""
+NE facing base pole melted in 20cm. West facing melted out 30 cm. Anemometer 260 deg W. No anchor at site.",What timezone?,Christina + Ali,Christina + Ali,
+windward1,58.80989,-134.19476,1751,6/19/25,18:35,7/30/25,17:23,40,153,113,FALSE,TRUE,"Cloudy, light breeze, no precip",Small sun cups,"40, 30, 20",18,"Measured sensor heights ~1.5 off from nominal. Base melted in a little bit towards W, SW. Anemometer ~307 NW, forgot about it when demounting the pole",Approx initial ablation stake height,Christina + Ali,Christina + Ali,
+lee2,59.01803,-134.08401,1400,6/17/25,14:10,8/4/25,14:54,42,286,244,TRUE,TRUE,"Overcast, light breeze, pretty cold",Blue ice,,-7,"Station wx pole slightly tilted. SE Base pole 20 cm above sfc, melted out. ""station in good condition
+sensor above ice surface: 1.: 56cm
+2.: 109cm
+3.: 160cm
+4.: 206cm
+wind bracket direction 150° SE; wind direction 160°S. sensor heights were measured above ice surface, as wx station was a little tilted (base pole towards SE about 20cm above ice surface)",,Christina,Christina,
+windward2,58.71779,-134.21329,1405,6/22/25,17:45,7/27/25,16:03,5,105,100,FALSE,FALSE,"Sunny, blue sky",small sun cups,"35,30,48",18,"Station was held up on one corner. Measurements were taken from the top of the snow as well to facilitate extrapolation of melt/laspe rate. ""1st sensor: Height above snow 99cm; Height above base 50cm
+2nd sensor: Height above snow 141.5cm; Height above base 100cm
+3rd sensor: Height above snow 191cm; Height above base 150cm
+Pendant shielded: Height above snow 207cm; Height above base 200cm
+Pendant unshielded: Height above snow 203cm; Height above base 200cm
+4th sensor: Height above snow 243cm; Height above base 200cm""","Revised ablation stake values based on timelapse camera. Initial height above sfc was not measured (or I can't find the notes), so determined using change in height and final height.",Greg,Greg,
+Ab mountain,59.49369,-135.3104,,,,9/16/25,16:42,,,0,,,,,,,"Pickup time, AB mountain. Still here! Appears untouched. Pickup time 16:42 09/16/25. High clouds turning to partial sun. No wind. Buggy. Sensor still at exactly 2m",,Daniel,Daniel,
+Carcross hanger,60.17317,-134.69675,,,,9/18/25,17:49,,,0,,,,,,,,,Daniel,Daniel,
+Dail peak,60.02555,-134.6384,,,,9/17/25,13:21,,,0,,,,,,,,,Daniel,Daniel,
+Fraser wx,59.71544,-135.05086,,,,9/17/25,10:04,,,0,,,,,,,"Fraser. Other point is more correct.
+
+Retrieved 10:04 09/17/25. Perfect condition. Light rain, cloudy. No wind.
+",,Daniel,Daniel,
+Klondike wx,59.62962,-135.16416,,,,9/17/25,08:34,,,0,,,,,,,"Retrieved 08:34 09/17/25. Rainy, low wind, in and out of clouds. Sensor in same spot & perf condition",,Daniel,Daniel,
+Muffys house,60.1653,-134.70967,,,,9/18/25,15:29,,,0,,,,,,,"Muffy's place
+
+Pickup on 9/18/25 15:29. Overcast and windy.",,Daniel,Daniel,
+Poole point,60.02592,-134.61144,,,,9/17/25,17:37,,,,,,,,,,,,Daniel,Daniel,
+Venus mine,60.02374,-134.62942,,,,9/17/25,13:19,,,,,,,,,,,,,,
