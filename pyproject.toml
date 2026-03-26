@@ -27,6 +27,14 @@ dependencies = [
     "netcdf4>=1.7.2",
     "h5netcdf>=1.1.0",
     "openpyxl>=3.1.5",
+    "debugpy>=1.8.17",
+    "rioxarray>=0.13.4",
+    "textalloc>=1.2.1",
+    "cmocean>=4.0.3",
+    "astral>=3.2",
+    "scikit-learn>=1.3.2",
+    "numba>=0.58.1",
+    "metpy>=1.5.1",
 ]
 
 [build-system]
