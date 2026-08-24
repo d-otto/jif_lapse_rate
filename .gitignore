@@ -7,6 +7,8 @@ docker/
 docs/
 api_keys.py
 CLAUDE.md
+AGENTS.md
+*.mp4
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
