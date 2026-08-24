@@ -37,7 +37,7 @@ from jiflr.utils import get_deployment_periods
 # Maps target site_id -> list of source site_ids to merge
 # Set to empty dict {} to disable colocated site merging
 COLOCATED_SITES = {
-    "G03": ["G03a", "G03b"],
+    "G03": ["G03A", "G03B"],
 }
 
 # Join method for merging colocated sites:
@@ -628,7 +628,21 @@ def main():
 
     process_directory(main_input, main_output, csv_deployment_path, logger)
 
-    # Process colocated site merges if configured
+    # Process subdirectories
+    # TODO: Make this procedural
+    subdirs = ["camp_wx", "on_ice_intensive", "off_ice", "on_ice"]
+
+    for subdir in subdirs:
+        subdir_input = input_base / subdir
+        subdir_output = output_base / subdir
+
+        if subdir_input.exists() and any(subdir_input.glob("*.nc")):
+            process_directory(subdir_input, subdir_output, csv_deployment_path, logger)
+        else:
+            logger.info(f"Skipping {subdir} subdirectory (not found or empty)")
+
+    # Process colocated site merges if configured.
+    # Runs after all subdirectories are processed so source files are present.
     if COLOCATED_SITES:
         # Load deployment periods CSV for QC plotting
         deployment_periods = None
@@ -645,21 +659,31 @@ def main():
                 )
             )
 
-            # Load source site datasets
+            # Search output_base and all subdirs for source files
             site_datasets = {}
+            site_paths = {}
             for source_site in source_sites:
-                source_path = main_output / f"{source_site}.nc"
-                if source_path.exists():
-                    site_datasets[source_site] = xr.open_dataset(source_path)
+                for candidate in output_base.rglob(f"{source_site}.nc"):
+                    site_datasets[source_site] = xr.open_dataset(candidate)
+                    site_paths[source_site] = candidate
                     logger.info(
-                        indent(f"Loaded {source_site} from {source_path.name}", level=1)
+                        indent(f"Loaded {source_site} from {candidate.relative_to(output_base)}", level=1)
                     )
+                    break
                 else:
                     logger.warning(
-                        indent(f"Source file not found: {source_path}", level=1)
+                        indent(f"Source file not found: {source_site}.nc", level=1)
                     )
 
             if len(site_datasets) >= 2:
+                # All source files must be in the same directory; use that as output dir
+                source_dirs = {p.parent for p in site_paths.values()}
+                if len(source_dirs) > 1:
+                    logger.warning(
+                        f"Source files for {target_site} are in different directories: {source_dirs}. Using first."
+                    )
+                output_dir = next(iter(source_dirs))
+
                 # Merge sites
                 merged_ds = merge_sites(
                     site_datasets, target_site, join=COLOCATED_MERGE_JOIN
@@ -670,15 +694,14 @@ def main():
                     ds.close()
 
                 # Save merged dataset
-                output_path = main_output / f"{target_site}.nc"
+                output_path = output_dir / f"{target_site}.nc"
                 merged_ds.to_netcdf(output_path)
                 logger.info(
                     indent(f"Saved merged dataset: {output_path.name}", level=1)
                 )
 
                 # Delete source files
-                for source_site in source_sites:
-                    source_path = main_output / f"{source_site}.nc"
+                for source_site, source_path in site_paths.items():
                     if source_path.exists():
                         source_path.unlink()
                         logger.info(
@@ -686,7 +709,7 @@ def main():
                         )
 
                     # Also remove source QC plots
-                    source_qc = main_output / "qc_plots" / f"{source_site}_qc.png"
+                    source_qc = source_path.parent / "qc_plots" / f"{source_site}_qc.png"
                     if source_qc.exists():
                         source_qc.unlink()
                         logger.info(
@@ -695,25 +718,12 @@ def main():
 
                 # Create QC plot for merged site
                 create_qc_plots(
-                    merged_ds, target_site, main_output, deployment_periods, logger
+                    merged_ds, target_site, output_dir, deployment_periods, logger
                 )
             else:
                 logger.warning(
                     f"Not enough source datasets found for {target_site} merge (need >= 2, got {len(site_datasets)})"
                 )
-
-    # Process subdirectories
-    # TODO: Make this procedural
-    subdirs = ["camp_wx", "on_ice_intensive", "off_ice", "on_ice"]
-
-    for subdir in subdirs:
-        subdir_input = input_base / subdir
-        subdir_output = output_base / subdir
-
-        if subdir_input.exists() and any(subdir_input.glob("*.nc")):
-            process_directory(subdir_input, subdir_output, csv_deployment_path, logger)
-        else:
-            logger.info(f"Skipping {subdir} subdirectory (not found or empty)")
 
 
 if __name__ == "__main__":

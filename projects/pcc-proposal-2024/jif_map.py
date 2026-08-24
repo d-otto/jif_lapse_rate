@@ -247,8 +247,9 @@ extent_polygon = Polygon([(lonW, latS), (lonW, latN), (lonE, latN), (lonE, latS)
 #elevation.clean()
 
 
-
-dem = riox.open_rasterio(Path("/Users/drotto/src/jif_lapse_rate/data/external/artcicDEM_32.tif"),chunks={"x":1000, "y":1000}, mask_and_scale=True).sel(band=1)
+p = Path("/Users/drotto/src/jiflr/data/external/arcticDEM_32.tif")
+print(p)
+dem = riox.open_rasterio(p, chunks={"x":1000, "y":1000}, mask_and_scale=True).sel(band=1)
 #dem_ccrs = ccrs.epsg(dem.rio.crs.to_epsg())
 dem = dem.rio.reproject(ccrs.PlateCarree())
 dem = dem.rio.clip_box(
@@ -278,10 +279,10 @@ dem.values = nn_fill(dem.values)
 
 # load rgi7
 # todo: make into fn in data file
-p = Path("data/external/rgi7/RGI2000-v7.0-G-01_alaska")
+p = Path("/Users/drotto/src/jiflr/data/external/rgi7/RGI2000-v7.0-G-01_alaska")
 rgi = gpd.read_file(p)
 
-p = Path("data/external/rgi7/RGI2000-v7.0-C-01_alaska")
+p = Path("/Users/drotto/src/jiflr/data/external/rgi7/RGI2000-v7.0-C-01_alaska")
 rgic = gpd.read_file(p)
 rgic = rgic.sort_values(by='area_km2', ascending=False)
 
@@ -383,6 +384,91 @@ scalebar = AnchoredSizeBar(mapax.transData,
 # 
 plt.savefig(f'test_{datetime.now().strftime("%Y%m%d-%H%M%S")}.png')
 
+#%% Load geoJSON
+
+# Load and process the GeoJSON data
+import json
+
+# Function to create a GeoDataFrame from GeoJSON features
+def create_gdf_from_features(features, feature_class=None, folder_id=None):
+    # Filter features by class and/or folder ID if specified
+    if feature_class:
+        features = [f for f in features if f['properties'].get('class') == feature_class]
+    if folder_id:
+        features = [f for f in features if f['properties'].get('folderId') == folder_id]
+    
+    if not features:
+        return None
+    
+    # Extract geometries and properties
+    geometries = []
+    properties = []
+    
+    for feature in features:
+        if feature['geometry'] is not None:
+            geom_type = feature['geometry']['type']
+            coords = feature['geometry']['coordinates']
+            
+            if geom_type == 'Point':
+                geometry = Point(coords[0], coords[1])
+            elif geom_type == 'LineString':
+                geometry = LineString(coords)
+            elif geom_type == 'Polygon':
+                geometry = Polygon(coords[0])
+            else:
+                continue
+                
+            geometries.append(geometry)
+            properties.append(feature['properties'])
+    
+    if not geometries:
+        return None
+        
+    # Create GeoDataFrame
+    gdf = gpd.GeoDataFrame(properties, geometry=geometries, crs='EPSG:4326')
+    return gdf
+
+# Load the GeoJSON data
+with open("/Users/drotto/Downloads/JIF_Lapse_Rate_2025_-_for-show.json", 'r') as f:
+    geojson_data = json.load(f)
+
+# Extract folders
+folders = [f for f in geojson_data['features'] if f['properties'].get('class') == 'Folder']
+folder_map = {f['id']: f['properties']['title'] for f in folders}
+
+# Extract all markers and shapes
+markers_gdf = create_gdf_from_features(geojson_data['features'], 'Marker')
+shapes_gdf = create_gdf_from_features(geojson_data['features'], 'Shape')
+
+# Group markers by color for visualization
+marker_categories = {}
+if markers_gdf is not None:
+    for idx, row in markers_gdf.iterrows():
+        color = row.get('marker-color', '#000000')
+        if color not in marker_categories:
+            marker_categories[color] = gpd.GeoDataFrame(columns=markers_gdf.columns)
+        marker_categories[color] = pd.concat([marker_categories[color], gpd.GeoDataFrame([row])])
+
+# Create specific category GeoDataFrames for special folders
+camps_markers = create_gdf_from_features(
+    geojson_data['features'], 
+    'Marker', 
+    next((f['id'] for f in folders if f['properties']['title'] == 'A - Camps'), None)
+)
+
+stakes_markers = create_gdf_from_features(
+    geojson_data['features'], 
+    'Marker', 
+    next((f['id'] for f in folders if f['properties']['title'] == 'Stake Locations 2024'), None)
+)
+
+pits_markers = create_gdf_from_features(
+    geojson_data['features'], 
+    'Marker', 
+    next((f['id'] for f in folders if f['properties']['title'] == 'MB Pits'), None)
+)
+
+
 #%%
 # Define the coordinates for Juneau and Skagway
 coords = {
@@ -420,7 +506,7 @@ prelim_pts = {
 prelim_pts = gpd.GeoDataFrame(geometry=list(prelim_pts.values()), index=prelim_pts.keys(), crs='EPSG:4326')
 
 # wx locations
-wx_pts = pd.read_csv(Path("/Users/drotto/src/jif_lapse_rate/data/external/JIRP_AWS_Stations/juneauIceField_weather_v1.0/WeatherStationLocations.csv"))
+wx_pts = pd.read_csv(Path("/Users/drotto/src/jiflr/_to_merge/jirp23_lapse_rate/Data/JIRP_AWS_Stations/juneauIceField_weather_v1.0/WeatherStationLocations.csv"))
 # Convert the pandas DataFrame to a GeoDataFrame
 wx_pts = gpd.GeoDataFrame(
     wx_pts, 
@@ -562,7 +648,7 @@ mapax.clabel(cmaj, cmaj.levels, inline=True, fontsize=1)
 
 
 # Plot the highway and international border
-road = gpd.read_file(Path("/Users/drotto/src/jif_lapse_rate/data/external/skagway-to-atlin.geojson"))
+road = gpd.read_file(Path("/Users/drotto/src/jiflr/data/external/skagway-to-atlin.geojson"))
 road = road.iloc[[0]]['geometry'].explode().iloc[0]
 road = road.segmentize(1)
 y,x,_ = zip(*road.coords)
@@ -595,10 +681,128 @@ for y, x, label in zip(wx_pts.geometry.x, wx_pts.geometry.y, wx_pts.index):
     if label in ['Camp 17', 'Camp 10', 'Camp 18']:
         mapax.text(x+0.01, y+0.02, label, fontsize=4.5, ha='left', fontweight='bold', transform=ccrs.PlateCarree())
 
-# prelim points
-site_colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:purple']
-for x, y, label, color in zip(prelim_pts.geometry.x, prelim_pts.geometry.y, prelim_pts.index, site_colors):
-    mapax.scatter(x, y, s=14, color=color, ec='black', marker='^', linewidths=0.25, transform=ccrs.PlateCarree(), zorder=2.4)
+# # prelim points
+# site_colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:purple']
+# for x, y, label, color in zip(prelim_pts.geometry.x, prelim_pts.geometry.y, prelim_pts.index, site_colors):
+#     mapax.scatter(x, y, s=14, color=color, ec='black', marker='^', linewidths=0.25, transform=ccrs.PlateCarree(), zorder=2.4)
+
+
+# plot contents of the geojason
+# Plot shapes (lines)
+if shapes_gdf is not None:
+    for idx, shape in shapes_gdf.iterrows():
+        props = shape['properties']
+        color = props.get('stroke', '#000000')
+        width = float(props.get('stroke-width', 1))
+        opacity = float(props.get('stroke-opacity', 1.0))
+        title = props.get('title', f'Shape {idx}')
+        
+        # For LineString features
+        if shape.geometry.geom_type == 'LineString':
+            x, y = shape.geometry.xy
+            mapax.plot(
+                x, y, 
+                transform=ccrs.PlateCarree(),
+                color=color,
+                linewidth=width,
+                alpha=opacity,
+                label=title,
+                zorder=2.2
+            )
+
+# Plot markers by color category
+if 'marker_categories' in locals():
+    for color, gdf in marker_categories.items():
+        # Convert color from hex (if needed)
+        if color.startswith('#'):
+            plot_color = color
+        else:
+            plot_color = '#' + color  # Adjust as needed for your color format
+            
+        for idx, marker in gdf.iterrows():
+            props = marker['properties']
+            marker_size = float(props.get('marker-size', 1)) * 5  # Adjust multiplier as needed
+            marker_symbol = props.get('marker-symbol', 'o')
+            title = props.get('title', '')
+            
+            # Map marker symbols to matplotlib symbols
+            symbol_map = {
+                'point': 'o',
+                'circle-p': 'o',
+                'c:ring': 'o',
+                'radiotower': '^',
+                # Add more mappings as needed
+            }
+            
+            mpl_symbol = symbol_map.get(marker_symbol, 'o')
+            
+            # Plot the marker
+            mapax.scatter(
+                marker.geometry.x, marker.geometry.y,
+                transform=ccrs.PlateCarree(),
+                color=plot_color,
+                s=marker_size,
+                marker=mpl_symbol,
+                edgecolor='black',
+                linewidth=0.25,
+                zorder=2.3
+            )
+            
+            # Add labels for important points if needed
+            if title and marker_size > 5:  # Only label larger markers
+                mapax.text(
+                    marker.geometry.x + 0.01, 
+                    marker.geometry.y + 0.01,
+                    title,
+                    transform=ccrs.PlateCarree(),
+                    fontsize=4,
+                    ha='left',
+                    va='bottom',
+                    zorder=2.4
+                )
+
+# Plot camps with special styling (if desired)
+if camps_markers is not None:
+    mapax.scatter(
+        camps_markers.geometry.x, camps_markers.geometry.y,
+        transform=ccrs.PlateCarree(),
+        color='green',
+        s=15,
+        marker='^',
+        edgecolor='black',
+        linewidth=0.5,
+        zorder=2.6,
+        label='Camps'
+    )
+
+# Plot stakes with special styling
+if stakes_markers is not None:
+    mapax.scatter(
+        stakes_markers.geometry.x, stakes_markers.geometry.y,
+        transform=ccrs.PlateCarree(),
+        color='purple',
+        s=10,
+        marker='s',  # Square for stakes
+        edgecolor='black',
+        linewidth=0.25,
+        zorder=2.5,
+        label='Stake Locations'
+    )
+
+# Plot pits with special styling
+if pits_markers is not None:
+    mapax.scatter(
+        pits_markers.geometry.x, pits_markers.geometry.y,
+        transform=ccrs.PlateCarree(),
+        color='orange',
+        s=12,
+        marker='v',  # Triangle down for pits
+        edgecolor='black',
+        linewidth=0.25,
+        zorder=2.6,
+        label='MB Pits'
+    )
+
 
 gl_maj = mapax.gridlines(
     draw_labels=['top', 'right'], linewidth=0.1, color='black',
@@ -654,7 +858,7 @@ plt.close(fig)
 
 
 fig, ax = plt.subplots(1,1, subplot_kw={"projection":ccrs.PlateCarree()})
-road = gpd.read_file(Path("/Users/drotto/src/jif_lapse_rate/data/external/skagway-to-atlin.geojson"))
+road = gpd.read_file(Path("/Users/drotto/src/jiflr/data/external/skagway-to-atlin.geojson"))
 road = road.iloc[[0]]['geometry']
 road.plot(ax=ax)
 

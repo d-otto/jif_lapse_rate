@@ -3,15 +3,16 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
-from scipy import stats
 from jiflr import ROOT
-from jiflr.utils import butterworth_filter
+from jiflr.data import select_sensors, merge_sensor_datasets
+from jiflr.utils import butterworth_filter, calculate_lapse_rate_timestep, lapse_rate_ufunc
+from scipy import stats
 import os
-import cmocean
+
 
 plt.style.use("default")
+plt.ioff()
 
 # Create output directory for plots
 output_dir = Path(__file__).parent / "output"
@@ -23,9 +24,22 @@ output_dir.mkdir(exist_ok=True)
 # Calculate time-varying lapse rates between maritime and continental site groups using lvl1 sensor data. This analysis computes hourly lapse rates over the temporal period where all sites have overlapping data coverage.
 
 # %%
-# Load the combined lvl1 data (includes both regular and intensive sites)
-lvl1_path = ROOT / "data" / "2025" / "processed" / "lvl1" / "lvl1_combined.nc"
-ds = xr.open_dataset(lvl1_path)
+
+# Load pendant data
+ds_pendants = xr.open_dataset(ROOT / "data/2025/processed/lvl1/lvl1_on_ice.nc")
+ds_pendants = select_sensors(ds_pendants, height="2m", shielding="shielded")
+
+# Drop sensors missing coordinates (e.g. G03A, G03B)
+ds_pendants = ds_pendants.isel(sensor_idx=~np.isnan(ds_pendants.latitude.values))
+
+# Load intensive site data and filter to shielded pendants
+ds_intensive = xr.open_dataset(
+    ROOT / "data/2025/processed/lvl1/lvl1_on_ice_intensive.nc"
+)
+ds_intensive = select_sensors(ds_intensive, height="2m", shielding="shielded")
+
+# Merge datasets
+ds = merge_sensor_datasets(ds_pendants, ds_intensive)
 
 print(f"Dataset dimensions: {dict(ds.sizes)}")
 print(f"Dataset variables: {list(ds.data_vars)}")
@@ -37,9 +51,14 @@ print(f"Available site_ids: {sorted(ds.site_id.values.tolist())}")
 # upper = 1/6 means cutoff at 6 samples = 30 minutes
 
 FILTER_ORDER = 4
-FILTER_FS = 1 / 300  # Sampling frequency for 5-minute data (1 sample per 300 seconds)
 FILTER_LOWER = None  # Low-pass filter only
-FILTER_UPPER = 1 / (60 * 60)  # 60-minute cutoff for 5-min data
+# FILTER_FS = 1 / 300  # Sampling frequency for 5-minute data (1 sample per 300 seconds)
+# FILTER_UPPER = 1 / (60 * 60)  # 1 hr cutoff
+FILTER_UPPER = 1 / (2 * 60 * 60)  # 2 hr cutoff
+
+# For 15-min data: fs = 1/(300 * 3) Hz
+FILTER_FS = 1 / (300 * 3)
+
 
 # %%
 # ============================================================================
@@ -106,248 +125,33 @@ print(f"All analysis sites: {all_analysis_sites}")
 
 # %%
 # Filter the dataset to include only our analysis sites and apply sensor filtering
-analysis_mask = ds.site_id.isin(all_analysis_sites)
-ds_analysis = ds.where(analysis_mask, drop=True)
+da = ds.temp_c
+analysis_mask = da.site_id.isin(all_analysis_sites)
+da = da.where(analysis_mask, drop=True)
 
-# For each site, select the best available temperature sensor at 2m height
-print("\nApplying sensor filtering to use best available 2m temperature sensors...")
-intensive_sites = ["Windward2", "Windward1", "Divide", "Lee1", "Lee2"]
-
-# Group sensors by site and select best 2m sensor for each site
-site_sensors = {}
-for i, site_id in enumerate(ds_analysis.site_id.values):
-    if site_id not in site_sensors:
-        site_sensors[site_id] = []
-
-    # Check if this sensor has temperature data and is at 2m
-    height = ds_analysis.height.values[i]
-    is_2m = height in ["2m", "2.0m"]  # Handle both formats
-
-    # Check if sensor has substantial temperature data
-    temp_data = ds_analysis.temp_c.isel(sensor_idx=i)
-    valid_temp_count = int(np.sum(~np.isnan(temp_data.values)))
-
-    if is_2m and valid_temp_count > 100:  # Substantial temperature data
-        site_sensors[site_id].append(
-            {
-                "index": i,
-                "sensor_id": ds_analysis.sensor_id.values[i],
-                "height": height,
-                "shielding": ds_analysis.shielding.values[i],
-                "sensor_type": ds_analysis.sensor_type.values[i],
-                "temp_count": valid_temp_count,
-            }
-        )
-
-# ============================================================================
-# SENSOR PRIORITY CONFIGURATION
-# ============================================================================
-# Define sensor selection priority (1 = highest priority)
-# Each entry: (filter_function, description)
-SENSOR_PRIORITIES = [
-    (
-        lambda s: s["shielding"] == "shielded" and "hobo" in s["sensor_type"],
-        "Shielded hobo",
-    ),
-    (
-        lambda s: s["sensor_type"] == "pace" and "temp" in s["sensor_id"],
-        "PACE temperature sensor",
-    ),
-    (
-        lambda s: s["shielding"] in ["unshielded", "unshield"]
-        and "hobo" in s["sensor_type"],
-        "Unshielded hobo",
-    ),
-]
-# ============================================================================
-
-
-def select_best_sensor(sensors, priorities):
-    """Select the best sensor based on priority list."""
-    for filter_func, description in priorities:
-        matching_sensors = [s for s in sensors if filter_func(s)]
-        if matching_sensors:
-            return max(matching_sensors, key=lambda x: x["temp_count"])
-    return None
-
-
-# For each site, select the best sensor based on priority
-sensor_filters = [False] * len(ds_analysis.sensor_idx)
-selected_sensors = {}
-
-for site_id, sensors in site_sensors.items():
-    if not sensors:
-        continue
-
-    best_sensor = select_best_sensor(sensors, SENSOR_PRIORITIES)
-
-    if best_sensor:
-        sensor_filters[best_sensor["index"]] = True
-        selected_sensors[site_id] = best_sensor
-        print(
-            f"  {site_id}: selected {best_sensor['sensor_id']} "
-            f"({best_sensor['height']}, {best_sensor['shielding']}, "
-            f"{best_sensor['sensor_type']}) - {best_sensor['temp_count']} obs"
-        )
-
-# Apply sensor filtering
-sensor_mask = np.array(sensor_filters)
-ds_analysis = ds_analysis.isel(sensor_idx=sensor_mask)
-
-print(f"Sensor filtering results:")
-print(f"  Original sensors: {len(sensor_filters)}")
-print(f"  Kept sensors: {sensor_mask.sum()}")
-print(f"  Filtered out: {len(sensor_filters) - sensor_mask.sum()}")
-
-print(f"Analysis dataset dimensions: {dict(ds_analysis.sizes)}")
-print(f"Analysis sites: {sorted(ds_analysis.site_id.values.tolist())}")
-print(
-    f"Elevation range: {ds_analysis.elevation.min().values:.1f}m to {ds_analysis.elevation.max().values:.1f}m"
-)
-
-# Check data availability for each site with sensor details
-print("\nData availability by site (with sensor filtering applied):")
-for site in sorted(set(ds_analysis.site_id.values)):
-    site_data = ds_analysis.where(ds_analysis.site_id == site, drop=True)
-    n_sensors = len(site_data.sensor_idx)
-    valid_temps = site_data.temp_c.count().values
-    total_times = len(ds_analysis.datetime)
-    coverage = (valid_temps / total_times) * 100 if total_times > 0 else 0
-    elevation = float(site_data.elevation.values[0])
-
-    # Show sensor details for this site
-    sensor_details = []
-    for i in range(n_sensors):
-        height = site_data.height.values[i]
-        shielding = site_data.shielding.values[i]
-        sensor_type = site_data.sensor_type.values[i]
-        sensor_details.append(f"{height}/{shielding}/{sensor_type}")
-
-    print(f"{site}: {n_sensors} sensor(s) [{', '.join(sensor_details)}]")
-    print(
-        f"    {valid_temps:,}/{total_times:,} observations ({coverage:.1f}%) at {elevation:.0f}m"
-    )
-
-# %%
-# Find the temporal overlap period where ALL analysis sites have valid data
-# We'll find the datetime range where all sites have non-NaN temperature data
-
-# For each site, find the first and last valid temperature observation
-site_coverage = {}
-for site in sorted(ds_analysis.site_id.values):
-    site_data = ds_analysis.where(ds_analysis.site_id == site, drop=True)
-    temp_data = site_data.temp_c.dropna("datetime")
-
-    if len(temp_data.datetime) > 0:
-        first_valid = temp_data.datetime.min()
-        last_valid = temp_data.datetime.max()
-        site_coverage[site] = {"first": first_valid, "last": last_valid}
-        print(
-            f"{site}: {pd.to_datetime(first_valid.values)} to {pd.to_datetime(last_valid.values)}"
-        )
-    else:
-        print(f"{site}: No valid data!")
-        site_coverage[site] = {"first": None, "last": None}
-
-# Find the overlap period: latest start time to earliest end time
-if site_coverage:
-    valid_sites = {k: v for k, v in site_coverage.items() if v["first"] is not None}
-
-    if len(valid_sites) >= 2:  # Need at least 2 sites for lapse rate
-        overlap_start = max([v["first"] for v in valid_sites.values()])
-        overlap_end = min([v["last"] for v in valid_sites.values()])
-
-        print(
-            f"\nOverlap period: {pd.to_datetime(overlap_start.values)} to {pd.to_datetime(overlap_end.values)}"
-        )
-
-        # Trim dataset to overlap period
-        ds_overlap = ds_analysis.sel(datetime=slice(overlap_start, overlap_end))
-        print(f"Overlap dataset dimensions: {dict(ds_overlap.sizes)}")
-
-        # Verify all sites have data in this period
-        print("\nData availability in overlap period:")
-        for site in sorted(ds_overlap.site_id.values):
-            site_data = ds_overlap.where(ds_overlap.site_id == site, drop=True)
-            valid_temps = site_data.temp_c.count().values
-            total_times = len(ds_overlap.datetime)
-            coverage = (valid_temps / total_times) * 100 if total_times > 0 else 0
-            print(
-                f"{site}: {valid_temps:,}/{total_times:,} observations ({coverage:.1f}%)"
-            )
-    else:
-        print("Insufficient valid sites for analysis!")
-else:
-    print("No site coverage data available!")
+# Mask to period of overlapping data
+has_data = da.notnull().all(dim="sensor_idx")
+da_overlap = da.sel(datetime=has_data)
 
 # %%
 # Resample to hourly data over the overlap period
 print("Resampling...")
 
-# Convert datetime to pandas DatetimeIndex for resampling
-datetime_pd = pd.to_datetime(ds_overlap.datetime.values)
-ds_overlap = ds_overlap.assign_coords(datetime=datetime_pd)
-
-# Resample to 1-hour intervals, taking the mean
-# ds_hourly = ds_overlap.resample(datetime="5min").mean()
-ds_hourly = ds_overlap.copy()
-
-print(f"Hourly dataset dimensions: {dict(ds_hourly.sizes)}")
-print(f"Original time points: {len(ds_overlap.datetime)}")
-print(f"Hourly time points: {len(ds_hourly.datetime)}")
-print(
-    f"Time range: {ds_hourly.datetime.min().values} to {ds_hourly.datetime.max().values}"
-)
-
+# Resample to 5-minute intervals, with custom aggregation for wind_speed_peak
+# Most variables use mean resampling
+da_hourly = da_overlap.resample(datetime="15min").mean()
 
 # %%
-# Create function to calculate lapse rate for a given set of sites at each timestep
-def calculate_lapse_rate_timestep(temp_data, elevation_data, site_mask):
-    """
-    Calculate linear regression (lapse rate and intercept) for temperature vs elevation
-    at a single timestep for sites matching the site_mask.
-
-    Parameters:
-    - temp_data: temperature values at this timestep (sensor_idx dimension)
-    - elevation_data: elevation values for sensors (sensor_idx dimension)
-    - site_mask: boolean mask for which sites to include
-
-    Returns:
-    - slope (lapse rate in °C/m)
-    - intercept (°C)
-    """
-
-    # Apply site mask and get valid (non-NaN) temperature data
-    masked_temp = temp_data[site_mask]
-    masked_elev = elevation_data[site_mask]
-
-    # Find indices where both temperature and elevation are valid
-    valid_idx = ~(np.isnan(masked_temp) | np.isnan(masked_elev))
-
-    if valid_idx.sum() < 2:  # Need at least 2 points for regression
-        return np.nan, np.nan
-
-    valid_temp = masked_temp[valid_idx]
-    valid_elev = masked_elev[valid_idx]
-
-    # Calculate linear regression
-    try:
-        slope, intercept, r_value, p_value, std_err = stats.linregress(
-            valid_elev, valid_temp
-        )
-        return slope, intercept
-    except:
-        return np.nan, np.nan
 
 
 # Test the function with the first timestep
 test_timestep = 0
-temp_at_t0 = ds_hourly.temp_c.isel(datetime=test_timestep).values
-elev_data = ds_hourly.elevation.values
+temp_at_t0 = da_hourly.isel(datetime=test_timestep).values
+elev_data = da_hourly.elevation.values
 
 # Create masks for maritime and continental sites
-maritime_mask = ds_hourly.site_id.isin(maritime_sites).values
-continental_mask = ds_hourly.site_id.isin(continental_sites).values
+maritime_mask = da_hourly.site_id.isin(maritime_sites).values
+continental_mask = da_hourly.site_id.isin(continental_sites).values
 
 print(f"Maritime sites mask: {maritime_mask.sum()} sites")
 print(f"Continental sites mask: {continental_mask.sum()} sites")
@@ -367,31 +171,13 @@ print(
 
 
 # %%
-# Create wrapper function that can be applied across all timesteps using apply_ufunc
-def lapse_rate_ufunc(temp_data, elevation_data, site_mask):
-    """
-    Wrapper function for calculate_lapse_rate_timestep that works with xr.apply_ufunc
-    """
-    # Initialize output arrays
-    n_times = temp_data.shape[0]
-    slopes = np.full(n_times, np.nan)
-    intercepts = np.full(n_times, np.nan)
-
-    # Calculate lapse rate for each timestep
-    for t in range(n_times):
-        slopes[t], intercepts[t] = calculate_lapse_rate_timestep(
-            temp_data[t, :], elevation_data, site_mask
-        )
-
-    return slopes, intercepts
-
 
 print("Calculating maritime lapse rates...")
 # Apply to maritime sites
 maritime_slopes, maritime_intercepts = xr.apply_ufunc(
     lapse_rate_ufunc,
-    ds_hourly.temp_c,
-    ds_hourly.elevation,
+    da_hourly,
+    da_hourly.elevation,
     maritime_mask,
     input_core_dims=[["datetime", "sensor_idx"], ["sensor_idx"], []],
     output_core_dims=[["datetime"], ["datetime"]],
@@ -403,8 +189,8 @@ print("Calculating continental lapse rates...")
 # Apply to continental sites
 continental_slopes, continental_intercepts = xr.apply_ufunc(
     lapse_rate_ufunc,
-    ds_hourly.temp_c,
-    ds_hourly.elevation,
+    da_hourly,
+    da_hourly.elevation,
     continental_mask,
     input_core_dims=[["datetime", "sensor_idx"], ["sensor_idx"], []],
     output_core_dims=[["datetime"], ["datetime"]],
@@ -421,7 +207,7 @@ print("Adding lapse rate variables to dataset...")
 # Create DataArrays with proper coordinates and attributes
 maritime_lapse_rate = xr.DataArray(
     maritime_slopes,
-    coords={"datetime": ds_hourly.datetime},
+    coords={"datetime": da_hourly.datetime},
     dims=["datetime"],
     name="maritime_lapse_rate",
     attrs={
@@ -435,7 +221,7 @@ maritime_lapse_rate = xr.DataArray(
 
 maritime_intercept = xr.DataArray(
     maritime_intercepts,
-    coords={"datetime": ds_hourly.datetime},
+    coords={"datetime": da_hourly.datetime},
     dims=["datetime"],
     name="maritime_intercept",
     attrs={
@@ -449,7 +235,7 @@ maritime_intercept = xr.DataArray(
 
 continental_lapse_rate = xr.DataArray(
     continental_slopes,
-    coords={"datetime": ds_hourly.datetime},
+    coords={"datetime": da_hourly.datetime},
     dims=["datetime"],
     name="continental_lapse_rate",
     attrs={
@@ -463,7 +249,7 @@ continental_lapse_rate = xr.DataArray(
 
 continental_intercept = xr.DataArray(
     continental_intercepts,
-    coords={"datetime": ds_hourly.datetime},
+    coords={"datetime": da_hourly.datetime},
     dims=["datetime"],
     name="continental_intercept",
     attrs={
@@ -476,19 +262,20 @@ continental_intercept = xr.DataArray(
 )
 
 # Add to the hourly dataset
-ds_hourly["maritime_lapse_rate"] = maritime_lapse_rate
-ds_hourly["maritime_intercept"] = maritime_intercept
-ds_hourly["continental_lapse_rate"] = continental_lapse_rate
-ds_hourly["continental_intercept"] = continental_intercept
+ds = da_hourly.to_dataset()
+ds["maritime_lapse_rate"] = maritime_lapse_rate
+ds["maritime_intercept"] = maritime_intercept
+ds["continental_lapse_rate"] = continental_lapse_rate
+ds["continental_intercept"] = continental_intercept
 
 print("Lapse rate variables added successfully!")
-print(f"Dataset variables: {list(ds_hourly.data_vars)}")
+print(f"Dataset variables: {list(ds.data_vars)}")
 
 # %%
 # Check available sites and their elevations for proper mapping
 print("Site mapping and elevation data:")
-unique_sites = ds_hourly.site_id.values
-unique_elevations = ds_hourly.elevation.values
+unique_sites = da_hourly.site_id.values
+unique_elevations = da_hourly.elevation.values
 
 # Create a site-elevation mapping
 site_elev_pairs = list(zip(unique_sites, unique_elevations))
@@ -595,9 +382,7 @@ def calculate_pairwise_lapse_rate(ds, site1, site2, time_slice=None):
 # Test the function
 print("Testing pairwise lapse rate calculation...")
 if maritime_highest and maritime_lowest:
-    test_lapse = calculate_pairwise_lapse_rate(
-        ds_hourly, maritime_highest, maritime_lowest
-    )
+    test_lapse = calculate_pairwise_lapse_rate(ds, maritime_highest, maritime_lowest)
     print(
         f"Test lapse rate between {maritime_highest} and {maritime_lowest}: {test_lapse.mean().values:.6f} °C/m"
     )
@@ -607,29 +392,23 @@ if maritime_highest and maritime_lowest:
 #
 print("Summary of calculated lapse rates:")
 print("\nMaritime lapse rate (°C/m):")
-print(f"  Mean: {ds_hourly.maritime_lapse_rate.mean().values:.6f}")
-print(f"  Std:  {ds_hourly.maritime_lapse_rate.std().values:.6f}")
-print(f"  Min:  {ds_hourly.maritime_lapse_rate.min().values:.6f}")
-print(f"  Max:  {ds_hourly.maritime_lapse_rate.max().values:.6f}")
-print(
-    f"  Valid: {ds_hourly.maritime_lapse_rate.count().values}/{len(ds_hourly.datetime)} hours"
-)
+print(f"  Mean: {ds.maritime_lapse_rate.mean().values:.6f}")
+print(f"  Std:  {ds.maritime_lapse_rate.std().values:.6f}")
+print(f"  Min:  {ds.maritime_lapse_rate.min().values:.6f}")
+print(f"  Max:  {ds.maritime_lapse_rate.max().values:.6f}")
+print(f"  Valid: {ds.maritime_lapse_rate.count().values}/{len(ds.datetime)} hours")
 
 print("\nContinental lapse rate (°C/m):")
-print(f"  Mean: {ds_hourly.continental_lapse_rate.mean().values:.6f}")
-print(f"  Std:  {ds_hourly.continental_lapse_rate.std().values:.6f}")
-print(f"  Min:  {ds_hourly.continental_lapse_rate.min().values:.6f}")
-print(f"  Max:  {ds_hourly.continental_lapse_rate.max().values:.6f}")
-print(
-    f"  Valid: {ds_hourly.continental_lapse_rate.count().values}/{len(ds_hourly.datetime)} hours"
-)
+print(f"  Mean: {ds.continental_lapse_rate.mean().values:.6f}")
+print(f"  Std:  {ds.continental_lapse_rate.std().values:.6f}")
+print(f"  Min:  {ds.continental_lapse_rate.min().values:.6f}")
+print(f"  Max:  {ds.continental_lapse_rate.max().values:.6f}")
+print(f"  Valid: {ds.continental_lapse_rate.count().values}/{len(ds.datetime)} hours")
 
 # Convert to °C/km for easier interpretation
 print("\nIn °C/km:")
-print(f"Maritime mean: {ds_hourly.maritime_lapse_rate.mean().values * 1000:.3f} °C/km")
-print(
-    f"Continental mean: {ds_hourly.continental_lapse_rate.mean().values * 1000:.3f} °C/km"
-)
+print(f"Maritime mean: {ds.maritime_lapse_rate.mean().values * 1000:.3f} °C/km")
+print(f"Continental mean: {ds.continental_lapse_rate.mean().values * 1000:.3f} °C/km")
 
 # ============================================================================
 # FIGURE 4
@@ -655,17 +434,17 @@ ax3 = fig.add_subplot(gs[1, 1])
 axes = [ax1, ax2, ax3]
 
 # Define time slices for zoomed views
-june_end_start = pd.Timestamp("2025-06-26")
-june_end_end = pd.Timestamp("2025-07-01")  # Up to but not including July 1
+june_end_start = pd.Timestamp("2025-06-27")
+june_end_end = pd.Timestamp("2025-07-04")  # Up to but not including July 1
 june_end_slice = slice(june_end_start, june_end_end)
 
-july_mid_start = pd.Timestamp("2025-07-17")
+july_mid_start = pd.Timestamp("2025-07-16")
 july_mid_end = pd.Timestamp("2025-07-22")  # Up to but not including July 22
 july_mid_slice = slice(july_mid_start, july_mid_end)
 
 # Get xlimits like Figure 1
-full_period_start = pd.Timestamp(ds_hourly["datetime"].values[0]).floor("D")
-full_period_end = pd.Timestamp(ds_hourly["datetime"].values[-1]).ceil("D")
+full_period_start = pd.Timestamp(ds["datetime"].values[0]).floor("D")
+full_period_end = pd.Timestamp(ds["datetime"].values[-1]).ceil("D")
 
 
 # Row 1: Full period view with shaded regions
@@ -679,13 +458,13 @@ ax1.axvspan(june_end_start, june_end_end, alpha=0.3, color="lightgrey")
 ax1.axvspan(july_mid_start, july_mid_end, alpha=0.3, color="lightgrey")
 
 # Apply Butterworth filter to maritime lapse rate
-maritime_lapse_raw = ds_hourly.maritime_lapse_rate * 1000
+maritime_lapse_raw = ds.maritime_lapse_rate * 1000
 maritime_lapse_filtered = butterworth_filter(
     maritime_lapse_raw.values,
     fs=FILTER_FS,
     order=FILTER_ORDER,
     lower=FILTER_LOWER,
-    upper=FILTER_UPPER * 1 / 2,
+    upper=FILTER_UPPER,
 )
 maritime_lapse_filtered_da = xr.DataArray(
     maritime_lapse_filtered,
@@ -694,13 +473,13 @@ maritime_lapse_filtered_da = xr.DataArray(
 )
 
 # Apply Butterworth filter to continental lapse rate
-continental_lapse_raw = ds_hourly.continental_lapse_rate * 1000
+continental_lapse_raw = ds.continental_lapse_rate * 1000
 continental_lapse_filtered = butterworth_filter(
     continental_lapse_raw.values,
     fs=FILTER_FS,
     order=FILTER_ORDER,
     lower=FILTER_LOWER,
-    upper=FILTER_UPPER * 1 / 2,
+    upper=FILTER_UPPER,
 )
 continental_lapse_filtered_da = xr.DataArray(
     continental_lapse_filtered,
@@ -749,8 +528,8 @@ ax1.spines["right"].set_visible(False)
 
 # Define zoom periods and corresponding axes for loop
 zoom_periods = [
-    (june_end_slice, "Zoomed-in Period 1: Jun 26 - 30"),
-    (july_mid_slice, "Zoomed-in Period 2: Jul 17 - 22"),
+    (june_end_slice, "Zoomed-in Period 1: Jun 27 - July 4"),
+    (july_mid_slice, "Zoomed-in Period 2: Jul 16 - 22"),
 ]
 zoom_axes = [axes[1], axes[2]]
 
@@ -821,230 +600,584 @@ plt.show()
 
 # %%
 # ============================================================================
-# FIGURE 4B (lapse rate timeseries with wind speed overlay)
+# UTILITY FUNCTIONS
 # ============================================================================
 
-# Create figure with 2 rows, 1 column layout
-fig = plt.figure(figsize=(18, 8), dpi=300, layout="constrained")
-gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1], hspace=0.3, figure=fig)
 
-# Top panel: Maritime lapse rate with Windward2 wind speed and pressure
-ax_maritime = fig.add_subplot(gs[0, 0])
-ax_wind_maritime = ax_maritime.twinx()
-ax_pressure_maritime = ax_maritime.twinx()
+def determine_axis_limits(data_series):
+    """
+    Determine axis limits using min and max values.
 
-# Bottom panel: Continental lapse rate with Lee2 wind speed and pressure
-ax_continental = fig.add_subplot(gs[1, 0])
-ax_wind_continental = ax_continental.twinx()
-ax_pressure_continental = ax_continental.twinx()
+    Parameters:
+    -----------
+    data_series : pandas.Series or xarray.DataArray
+        The data series to analyze
 
-# Offset the third y-axis
-ax_pressure_maritime.spines['right'].set_position(('outward', 60))
-ax_pressure_continental.spines['right'].set_position(('outward', 60))
+    Returns:
+    --------
+    tuple : (min_val, max_val) for axis limits
+    """
+    if data_series is None:
+        return (0, 1)  # Default fallback
 
-# ============================================================================
-# TOP PANEL: Maritime lapse rate with Windward2 wind speed
-# ============================================================================
+    # Convert to pandas if needed and drop NaN values
+    if hasattr(data_series, "to_pandas"):
+        clean_data = data_series.to_pandas().dropna()
+    else:
+        clean_data = data_series.dropna()
 
-# Add thick black line at zero
-ax_maritime.axhline(y=0, color="black", linewidth=2, zorder=1)
+    if len(clean_data) == 0:
+        return (0, 1)  # Default fallback for empty data
 
-# Add shaded regions for periods of interest
-ax_maritime.axvspan(june_end_start, june_end_end, alpha=0.3, color="lightgrey", zorder=2)
-ax_maritime.axvspan(july_mid_start, july_mid_end, alpha=0.3, color="lightgrey", zorder=2)
+    # Calculate min and max
+    data_min = clean_data.min()
+    data_max = clean_data.max()
 
-# Plot filtered maritime lapse rate
-maritime_lapse_filtered_da.plot(
-    ax=ax_maritime, label="Maritime", color=MARITIME_COLOR, alpha=0.7, linewidth=1.5, zorder=3
-)
+    # Add small buffer (5% of range)
+    data_range = data_max - data_min
+    buffer = data_range * 0.05
 
-# Get Windward2 wind speed and pressure data (now using ds_hourly)
-windward2_mask = ds_hourly.site_id == 'Windward2'
-windward2_wind = ds_hourly.wind_speed_avg.where(windward2_mask, drop=True)
-windward2_pressure = ds_hourly.pressure.where(windward2_mask, drop=True)
+    return (data_min - buffer, data_max + buffer)
 
-# Find sensors with wind and pressure data separately (they're on different sensors)
-windward2_wind_series = None
-windward2_pressure_series = None
 
-# Find wind data sensor
-for i in range(len(windward2_wind.sensor_idx)):
-    wind_series = windward2_wind.isel(sensor_idx=i)
-    if wind_series.count() > 0:  # This sensor has wind data
-        windward2_wind_series = wind_series
-        break
+# # %%
+# # ============================================================================
+# # FIGURE 8b (Two-column period comparison function)
+# # ============================================================================
 
-# Find pressure data sensor  
-for i in range(len(windward2_pressure.sensor_idx)):
-    pressure_series = windward2_pressure.isel(sensor_idx=i)
-    if pressure_series.count() > 0:  # This sensor has pressure data
-        windward2_pressure_series = pressure_series
-        break
 
-if windward2_wind_series is not None:
-    # Plot wind speed as light grey bars (behind lapse rate line)
-    # Convert to pandas for easier datetime handling
-    wind_df = windward2_wind_series.to_pandas().dropna()
-    if len(wind_df) > 0:
-        ax_wind_maritime.bar(
-            wind_df.index, 
-            wind_df.values, 
-            color='lightgrey', 
-            alpha=0.4,
-            width=pd.Timedelta(hours=1),  # Use timedelta for width
-            zorder=1
-        )
+# def create_figure_8b(
+#     site_name,
+#     ds_hourly,
+#     maritime_lapse_filtered_da,
+#     continental_lapse_filtered_da,
+#     output_dir,
+#     june_period,
+#     july_period,
+#     filter_params,
+#     show_maritime=True,
+#     show_continental=False,
+# ):
+#     """
+#     Create Figure 8b showing side-by-side comparison of two time periods.
 
-if windward2_pressure_series is not None:
-    # Plot pressure as a thin line
-    pressure_df = windward2_pressure_series.to_pandas().dropna() 
-    if len(pressure_df) > 0:
-        ax_pressure_maritime.plot(
-            pressure_df.index,
-            pressure_df.values,
-            color='darkgrey',
-            alpha=0.6,
-            linewidth=1,
-            zorder=2
-        )
+#     Parameters:
+#     -----------
+#     site_name : str
+#         Name of the site to analyze
+#     ds_hourly : xarray.Dataset
+#         Hourly dataset with wind/pressure/light data
+#     maritime_lapse_filtered_da : xarray.DataArray
+#         Filtered maritime lapse rate data
+#     continental_lapse_filtered_da : xarray.DataArray
+#         Filtered continental lapse rate data
+#     output_dir : pathlib.Path
+#         Output directory for saving figures
+#     june_period : tuple
+#         (start_date, end_date) for June period
+#     july_period : tuple
+#         (start_date, end_date) for July period
+#     filter_params : dict
+#         Butterworth filter parameters
+#     show_maritime : bool
+#         Whether to show maritime lapse rate
+#     show_continental : bool
+#         Whether to show continental lapse rate
+#     """
 
-# Set formatting like Figure 4
-ax_maritime.xaxis.set_major_locator(DayLocator())
-ax_maritime.xaxis.set_minor_locator(HourLocator(interval=12))
-ax_maritime.xaxis.set_major_formatter(DateFormatter("%b %d"))
-ax_maritime.set_xlim(full_period_start, full_period_end)
+#     # Create figure with 2 columns, 4 rows layout
+#     fig = plt.figure(figsize=(20, 16), dpi=300, layout="constrained")
+#     gs = gridspec.GridSpec(
+#         4, 2, height_ratios=[2, 2, 1.5, 2], hspace=0.3, wspace=0.2, figure=fig
+#     )
 
-# Get all the tick labels and set every other one to empty
-labels = ax_maritime.get_xticklabels()
-for i, label in enumerate(labels):
-    if i % 2 == 1:  # Hide every other label (odd indices)
-        label.set_visible(False)
+#     # Define periods
+#     june_start, june_end = june_period
+#     july_start, july_end = july_period
+#     june_slice = slice(june_start, june_end)
+#     july_slice = slice(july_start, july_end)
 
-plt.setp(ax_maritime.xaxis.get_majorticklabels(), rotation=30, ha="right")
+#     # Extract site data for all variables
+#     site_mask = ds_hourly.site_id == site_name
+#     site_wind_avg = ds_hourly.wind_speed_avg.where(site_mask, drop=True)
+#     site_wind_peak = ds_hourly.wind_speed_peak.where(site_mask, drop=True)
+#     site_wind_dir = ds_hourly.wind_direction.where(site_mask, drop=True)
+#     site_pressure = ds_hourly.pressure.where(site_mask, drop=True)
+#     site_humidity = (
+#         ds_hourly.humidity.where(site_mask, drop=True)
+#         if "humidity" in ds_hourly.data_vars
+#         else None
+#     )
+#     site_light = (
+#         ds_hourly.intensity_lux.where(site_mask, drop=True)
+#         if "intensity_lux" in ds_hourly.data_vars
+#         else None
+#     )
+#     site_temp = ds_hourly.temp_c.where(site_mask, drop=True)
 
-ax_maritime.set_ylim(-20, 20)
-ax_maritime.set_ylabel("Maritime Lapse Rate (°C/km)", color=MARITIME_COLOR)
-ax_maritime.set_xlabel("")
-ax_maritime.set_title("Maritime Lapse Rate with Windward2 Wind Speed")
-ax_maritime.grid(True, alpha=0.3, which="major")
-ax_maritime.grid(True, alpha=0.1, which="minor")
-ax_maritime.set_axisbelow(True)
-ax_maritime.spines["top"].set_visible(False)
-ax_maritime.spines["right"].set_visible(False)
+#     # Find sensors with data for each variable (same logic as Figure 8)
+#     def find_sensor_with_data(data_array):
+#         if data_array is None or len(data_array.sensor_idx) == 0:
+#             return None
+#         for i in range(len(data_array.sensor_idx)):
+#             series = data_array.isel(sensor_idx=i)
+#             if series.count() > 0:
+#                 return series
+#         return None
 
-# Wind speed axis formatting
-ax_wind_maritime.set_ylabel("Wind Speed (m/s)", color='grey')
-ax_wind_maritime.tick_params(axis='y', labelcolor='grey')
-ax_wind_maritime.spines["top"].set_visible(False)
+#     site_wind_avg_series = find_sensor_with_data(site_wind_avg)
+#     site_wind_peak_series = find_sensor_with_data(site_wind_peak)
+#     site_wind_dir_series = find_sensor_with_data(site_wind_dir)
+#     site_pressure_series = find_sensor_with_data(site_pressure)
+#     site_humidity_series = find_sensor_with_data(site_humidity)
+#     site_light_series = find_sensor_with_data(site_light)
 
-# Pressure axis formatting
-ax_pressure_maritime.set_ylabel("Pressure (hPa)", color='darkgrey')
-ax_pressure_maritime.tick_params(axis='y', labelcolor='darkgrey')
-ax_pressure_maritime.spines["top"].set_visible(False)
+#     # Find temperature data sensor (prioritize 2m shielded hobo)
+#     site_temp_series = None
+#     if site_temp is not None and len(site_temp.sensor_idx) > 0:
+#         for i in range(len(site_temp.sensor_idx)):
+#             height = site_temp.height.values[i]
+#             shielding = site_temp.shielding.values[i]
+#             sensor_type = site_temp.sensor_type.values[i]
+#             is_2m = height in ["2m", "2.0m"]
+#             is_shielded_hobo = shielding == "shielded" and "hobo" in sensor_type
 
-# ============================================================================
-# BOTTOM PANEL: Continental lapse rate with Lee2 wind speed
-# ============================================================================
+#             series = site_temp.isel(sensor_idx=i)
+#             if series.count() > 0:
+#                 if is_2m and is_shielded_hobo:
+#                     site_temp_series = series
+#                     break
+#                 elif site_temp_series is None:  # Fallback to any temperature sensor
+#                     site_temp_series = series
 
-# Add thick black line at zero
-ax_continental.axhline(y=0, color="black", linewidth=2, zorder=1)
+#     # Column titles
+#     col_titles = [
+#         f"June Period ({june_start.strftime('%b %d')} - {june_end.strftime('%b %d')})",
+#         f"July Period ({july_start.strftime('%b %d')} - {july_end.strftime('%b %d')})",
+#     ]
 
-# Add shaded regions for periods of interest
-ax_continental.axvspan(june_end_start, june_end_end, alpha=0.3, color="lightgrey", zorder=2)
-ax_continental.axvspan(july_mid_start, july_mid_end, alpha=0.3, color="lightgrey", zorder=2)
+#     # Pre-collect all data for both periods to determine shared axis limits
+#     def collect_period_data(period_slice):
+#         period_data = {}
 
-# Plot filtered continental lapse rate
-continental_lapse_filtered_da.plot(
-    ax=ax_continental, label="Continental", color=CONTINENTAL_COLOR, alpha=0.7, linewidth=1.5, zorder=3
-)
+#         # Lapse rate data
+#         lapse_data = []
+#         if show_maritime and maritime_lapse_filtered_da is not None:
+#             maritime_period = maritime_lapse_filtered_da.sel(datetime=period_slice)
+#             lapse_data.append(maritime_period)
+#         if show_continental and continental_lapse_filtered_da is not None:
+#             continental_period = continental_lapse_filtered_da.sel(
+#                 datetime=period_slice
+#             )
+#             lapse_data.append(continental_period)
+#         period_data["lapse"] = lapse_data
 
-# Get Lee2 wind speed and pressure data (now using ds_hourly)
-lee2_mask = ds_hourly.site_id == 'Lee2'
-lee2_wind = ds_hourly.wind_speed_avg.where(lee2_mask, drop=True)
-lee2_pressure = ds_hourly.pressure.where(lee2_mask, drop=True)
+#         # Wind data
+#         wind_data = []
+#         wind_dir_data = None
+#         if site_wind_avg_series is not None:
+#             wind_avg_period = site_wind_avg_series.sel(datetime=period_slice)
+#             wind_avg_df = wind_avg_period.to_pandas().dropna()
+#             if len(wind_avg_df) > 0:
+#                 wind_data.extend(wind_avg_df.values)
+#         if site_wind_peak_series is not None:
+#             wind_peak_period = site_wind_peak_series.sel(datetime=period_slice)
+#             wind_peak_df = wind_peak_period.to_pandas().dropna()
+#             if len(wind_peak_df) > 0:
+#                 wind_data.extend(wind_peak_df.values)
+#         if site_wind_dir_series is not None:
+#             wind_dir_period = site_wind_dir_series.sel(datetime=period_slice)
+#             wind_dir_df = wind_dir_period.to_pandas().dropna()
+#             if len(wind_dir_df) > 0:
+#                 wind_dir_data = wind_dir_df
+#         period_data["wind"] = wind_data
+#         period_data["wind_dir"] = wind_dir_data
 
-# Find sensors with wind and pressure data separately (they're on different sensors)
-lee2_wind_series = None
-lee2_pressure_series = None
+#         # Pressure data
+#         pressure_data = None
+#         if site_pressure_series is not None:
+#             pressure_period = site_pressure_series.sel(datetime=period_slice)
+#             pressure_df = pressure_period.to_pandas().dropna()
+#             if len(pressure_df) > 0:
+#                 pressure_data = pressure_df
+#         period_data["pressure"] = pressure_data
 
-# Find wind data sensor
-for i in range(len(lee2_wind.sensor_idx)):
-    wind_series = lee2_wind.isel(sensor_idx=i)
-    if wind_series.count() > 0:  # This sensor has wind data
-        lee2_wind_series = wind_series
-        break
+#         # Humidity data
+#         humidity_data = None
+#         if site_humidity_series is not None:
+#             humidity_period = site_humidity_series.sel(datetime=period_slice)
+#             humidity_df = humidity_period.to_pandas().dropna()
+#             if len(humidity_df) > 0:
+#                 humidity_data = humidity_df
+#         period_data["humidity"] = humidity_data
 
-# Find pressure data sensor
-for i in range(len(lee2_pressure.sensor_idx)):
-    pressure_series = lee2_pressure.isel(sensor_idx=i)
-    if pressure_series.count() > 0:  # This sensor has pressure data
-        lee2_pressure_series = pressure_series
-        break
+#         # Temperature and light data
+#         temp_data = None
+#         light_data = None
+#         if site_temp_series is not None:
+#             temp_period = site_temp_series.sel(datetime=period_slice)
+#             temp_df = temp_period.to_pandas().dropna()
+#             if len(temp_df) > 0:
+#                 temp_data = temp_df
+#         if site_light_series is not None:
+#             light_period = site_light_series.sel(datetime=period_slice)
+#             light_df = light_period.to_pandas().dropna()
+#             if len(light_df) > 0:
+#                 light_data = light_df
+#         period_data["temp"] = temp_data
+#         period_data["light"] = light_data
 
-if lee2_wind_series is not None:
-    # Plot wind speed as light grey bars (behind lapse rate line)
-    # Convert to pandas for easier datetime handling
-    wind_df = lee2_wind_series.to_pandas().dropna()
-    if len(wind_df) > 0:
-        ax_wind_continental.bar(
-            wind_df.index, 
-            wind_df.values, 
-            color='lightgrey', 
-            alpha=0.4,
-            width=pd.Timedelta(hours=1),  # Use timedelta for width
-            zorder=1
-        )
+#         return period_data
 
-if lee2_pressure_series is not None:
-    # Plot pressure as a thin line
-    pressure_df = lee2_pressure_series.to_pandas().dropna()
-    if len(pressure_df) > 0:
-        ax_pressure_continental.plot(
-            pressure_df.index,
-            pressure_df.values,
-            color='darkgrey',
-            alpha=0.6,
-            linewidth=1,
-            zorder=2
-        )
+#     # Collect data for both periods
+#     june_data = collect_period_data(june_slice)
+#     july_data = collect_period_data(july_slice)
 
-# Set formatting like Figure 4
-ax_continental.xaxis.set_major_locator(DayLocator())
-ax_continental.xaxis.set_minor_locator(HourLocator(interval=12))
-ax_continental.xaxis.set_major_formatter(DateFormatter("%b %d"))
-ax_continental.set_xlim(full_period_start, full_period_end)
+#     # Calculate shared axis limits
+#     def get_shared_limits(june_vals, july_vals):
+#         combined_data = []
+#         if june_vals is not None:
+#             if hasattr(june_vals, "values"):
+#                 combined_data.extend(june_vals.values)
+#             else:
+#                 combined_data.extend(june_vals)
+#         if july_vals is not None:
+#             if hasattr(july_vals, "values"):
+#                 combined_data.extend(july_vals.values)
+#             else:
+#                 combined_data.extend(july_vals)
+#         if combined_data:
+#             return determine_axis_limits(pd.Series(combined_data))
+#         return None
 
-# Get all the tick labels and set every other one to empty
-labels = ax_continental.get_xticklabels()
-for i, label in enumerate(labels):
-    if i % 2 == 1:  # Hide every other label (odd indices)
-        label.set_visible(False)
+#     # Calculate shared limits for each row
+#     # Row 1: Lapse rates
+#     all_lapse_data = []
+#     for lapse_list in [june_data["lapse"], july_data["lapse"]]:
+#         for lapse_da in lapse_list:
+#             all_lapse_data.append(lapse_da)
+#     if all_lapse_data:
+#         combined_lapse = xr.concat(all_lapse_data, dim="datetime")
+#         lapse_limits = determine_axis_limits(combined_lapse)
+#     else:
+#         lapse_limits = None
 
-plt.setp(ax_continental.xaxis.get_majorticklabels(), rotation=30, ha="right")
+#     # Row 2: Wind speeds and direction
+#     wind_limits = get_shared_limits(june_data["wind"], july_data["wind"])
+#     wind_dir_limits = get_shared_limits(june_data["wind_dir"], july_data["wind_dir"])
 
-ax_continental.set_ylim(-20, 20)
-ax_continental.set_ylabel("Continental Lapse Rate (°C/km)", color=CONTINENTAL_COLOR)
-ax_continental.set_xlabel("Date")
-ax_continental.set_title("Continental Lapse Rate with Lee2 Wind Speed")
-ax_continental.grid(True, alpha=0.3, which="major")
-ax_continental.grid(True, alpha=0.1, which="minor")
-ax_continental.set_axisbelow(True)
-ax_continental.spines["top"].set_visible(False)
-ax_continental.spines["right"].set_visible(False)
+#     # Row 3: Pressure and humidity
+#     pressure_limits = get_shared_limits(june_data["pressure"], july_data["pressure"])
+#     humidity_limits = get_shared_limits(june_data["humidity"], july_data["humidity"])
 
-# Wind speed axis formatting
-ax_wind_continental.set_ylabel("Wind Speed (m/s)", color='grey')
-ax_wind_continental.tick_params(axis='y', labelcolor='grey')
-ax_wind_continental.spines["top"].set_visible(False)
+#     # Row 4: Temperature and light
+#     temp_limits = get_shared_limits(june_data["temp"], july_data["temp"])
+#     light_limits = get_shared_limits(june_data["light"], july_data["light"])
 
-# Pressure axis formatting
-ax_pressure_continental.set_ylabel("Pressure (hPa)", color='darkgrey')
-ax_pressure_continental.tick_params(axis='y', labelcolor='darkgrey')
-ax_pressure_continental.spines["top"].set_visible(False)
+#     # Create subplots for each column and row
+#     for col, (period_slice, col_title) in enumerate(
+#         [(june_slice, col_titles[0]), (july_slice, col_titles[1])]
+#     ):
+#         # ROW 1: Lapse rate(s)
+#         ax_temp = fig.add_subplot(gs[0, col])
+#         ax_temp.axhline(y=0, color="black", linewidth=2, zorder=1)
 
-plt.tight_layout()
-plt.savefig(output_dir / "Fig4b_lapse_rate_windspeed_timeseries.png", dpi=300, bbox_inches="tight")
-plt.show()
+#         lapse_data_for_limits = []
+#         if show_maritime and maritime_lapse_filtered_da is not None:
+#             maritime_period = maritime_lapse_filtered_da.sel(datetime=period_slice)
+#             maritime_period.plot(
+#                 ax=ax_temp,
+#                 label="Maritime",
+#                 color=MARITIME_COLOR,
+#                 alpha=0.7,
+#                 linewidth=1.5,
+#                 zorder=3,
+#             )
+#             lapse_data_for_limits.append(maritime_period)
+
+#         if show_continental and continental_lapse_filtered_da is not None:
+#             continental_period = continental_lapse_filtered_da.sel(
+#                 datetime=period_slice
+#             )
+#             continental_period.plot(
+#                 ax=ax_temp,
+#                 label="Continental",
+#                 color=CONTINENTAL_COLOR,
+#                 alpha=0.7,
+#                 linewidth=1.5,
+#                 zorder=3,
+#             )
+#             lapse_data_for_limits.append(continental_period)
+
+#         # Apply shared y-axis limits
+#         if lapse_limits is not None:
+#             ax_temp.set_ylim(lapse_limits)
+
+#         ax_temp.set_ylabel("Lapse Rate (°C/km)")
+#         ax_temp.set_title(col_title)
+#         ax_temp.grid(True, alpha=0.3)
+#         ax_temp.set_axisbelow(True)
+#         ax_temp.spines["top"].set_visible(False)
+#         ax_temp.spines["right"].set_visible(False)
+#         if show_maritime and show_continental:
+#             ax_temp.legend()
+
+#         # ROW 2: Wind analysis
+#         ax_wind = fig.add_subplot(gs[1, col])
+#         ax_wind_dir = ax_wind.twinx()
+
+#         wind_data_for_limits = []
+#         if site_wind_avg_series is not None:
+#             wind_avg_period = site_wind_avg_series.sel(datetime=period_slice)
+#             wind_avg_df = wind_avg_period.to_pandas().dropna()
+#             if len(wind_avg_df) > 0:
+#                 ax_wind.plot(
+#                     wind_avg_df.index,
+#                     wind_avg_df.values,
+#                     color="blue",
+#                     alpha=0.7,
+#                     linewidth=1,
+#                     label="Wind Speed Avg",
+#                 )
+#                 wind_data_for_limits.extend(wind_avg_df.values)
+
+#         if site_wind_peak_series is not None:
+#             wind_peak_period = site_wind_peak_series.sel(datetime=period_slice)
+#             wind_peak_df = wind_peak_period.to_pandas().dropna()
+#             if len(wind_peak_df) > 0:
+#                 ax_wind.plot(
+#                     wind_peak_df.index,
+#                     wind_peak_df.values,
+#                     color="darkblue",
+#                     alpha=0.7,
+#                     linewidth=1,
+#                     label="Wind Speed Peak",
+#                 )
+#                 wind_data_for_limits.extend(wind_peak_df.values)
+
+#         wind_dir_data = None
+#         if site_wind_dir_series is not None:
+#             wind_dir_period = site_wind_dir_series.sel(datetime=period_slice)
+#             wind_dir_df = wind_dir_period.to_pandas().dropna()
+#             if len(wind_dir_df) > 0:
+#                 ax_wind_dir.scatter(
+#                     wind_dir_df.index,
+#                     wind_dir_df.values,
+#                     c="red",
+#                     alpha=0.3,
+#                     s=1,
+#                     label="Wind Direction",
+#                 )
+#                 wind_dir_data = wind_dir_df
+
+#         # Apply shared wind axis limits
+#         if wind_limits is not None:
+#             ax_wind.set_ylim(wind_limits)
+
+#         # Apply shared wind direction axis limits
+#         if wind_dir_limits is not None:
+#             ax_wind_dir.set_ylim(wind_dir_limits)
+#         else:
+#             ax_wind_dir.set_ylim(0, 360)  # Default fallback
+
+#         ax_wind.set_ylabel("Wind Speed (m/s)", color="blue")
+#         ax_wind_dir.set_ylabel("Wind Direction (°)", color="red")
+#         ax_wind.set_title(f"Wind Analysis ({site_name})")
+#         ax_wind.grid(True, alpha=0.3)
+#         ax_wind.set_axisbelow(True)
+#         ax_wind.spines["top"].set_visible(False)
+
+#         # ROW 3: Pressure and humidity
+#         ax_pressure = fig.add_subplot(gs[2, col])
+#         ax_humidity = ax_pressure.twinx()
+
+#         # Pressure data
+#         if site_pressure_series is not None:
+#             pressure_period = site_pressure_series.sel(datetime=period_slice)
+#             pressure_df = pressure_period.to_pandas().dropna()
+#             if len(pressure_df) > 0:
+#                 ax_pressure.plot(
+#                     pressure_df.index,
+#                     pressure_df.values,
+#                     color="green",
+#                     alpha=0.7,
+#                     linewidth=1,
+#                     label="Pressure",
+#                 )
+
+#         # Humidity data
+#         if site_humidity_series is not None:
+#             humidity_period = site_humidity_series.sel(datetime=period_slice)
+#             humidity_df = humidity_period.to_pandas().dropna()
+#             if len(humidity_df) > 0:
+#                 ax_humidity.plot(
+#                     humidity_df.index,
+#                     humidity_df.values,
+#                     color="purple",
+#                     alpha=0.7,
+#                     linewidth=1,
+#                     label="Humidity",
+#                 )
+
+#         # Apply shared axis limits
+#         if pressure_limits is not None:
+#             ax_pressure.set_ylim(pressure_limits)
+#         if humidity_limits is not None:
+#             ax_humidity.set_ylim(humidity_limits)
+
+#         ax_pressure.set_ylabel("Pressure (hPa)", color="green")
+#         ax_humidity.set_ylabel("Humidity (%)", color="purple")
+#         ax_pressure.set_title(f"Pressure & Humidity ({site_name})")
+#         ax_pressure.grid(True, alpha=0.3)
+#         ax_pressure.set_axisbelow(True)
+#         ax_pressure.spines["top"].set_visible(False)
+
+#         # ROW 4: Light and temperature
+#         ax_light_temp = fig.add_subplot(gs[3, col])
+#         ax_light_temp_twin = ax_light_temp.twinx()
+
+#         # Temperature data
+#         if site_temp_series is not None:
+#             temp_period = site_temp_series.sel(datetime=period_slice)
+#             temp_df = temp_period.to_pandas().dropna()
+#             if len(temp_df) > 0:
+#                 ax_light_temp.plot(
+#                     temp_df.index,
+#                     temp_df.values,
+#                     color="red",
+#                     alpha=0.7,
+#                     linewidth=1,
+#                     label="Temperature",
+#                 )
+
+#         # Apply shared temperature axis limits
+#         if temp_limits is not None:
+#             ax_light_temp.set_ylim(temp_limits)
+
+#         # Light data
+#         if site_light_series is not None:
+#             light_period = site_light_series.sel(datetime=period_slice)
+#             light_df = light_period.to_pandas().dropna()
+#             if len(light_df) > 0:
+#                 ax_light_temp_twin.plot(
+#                     light_df.index,
+#                     light_df.values,
+#                     color="orange",
+#                     alpha=0.5,
+#                     linewidth=1,
+#                     label="Light",
+#                 )
+
+#         # Apply shared light axis limits
+#         if light_limits is not None:
+#             ax_light_temp_twin.set_ylim(light_limits)
+
+#         ax_light_temp.set_ylabel("Temperature (°C)", color="red")
+#         ax_light_temp_twin.set_ylabel("Light Intensity (lux)", color="orange")
+#         ax_light_temp.set_title(f"Light Intensity and Temperature ({site_name})")
+#         ax_light_temp.grid(True, alpha=0.3)
+#         ax_light_temp.set_axisbelow(True)
+#         ax_light_temp.spines["top"].set_visible(False)
+
+#         # Format x-axis for bottom row only
+#         if True:  # Always format x-axis for better readability in period views
+#             ax_light_temp.xaxis.set_major_locator(DayLocator())
+#             ax_light_temp.xaxis.set_minor_locator(HourLocator(interval=6))
+#             ax_light_temp.xaxis.set_major_formatter(DateFormatter("%m/%d"))
+#             plt.setp(ax_light_temp.xaxis.get_majorticklabels(), rotation=30, ha="right")
+
+#     # Add main title
+#     fig.suptitle(
+#         f"Figure 8b: {site_name} - Period Comparison", fontsize=16, fontweight="bold"
+#     )
+
+#     # Save figure
+#     plt.tight_layout()
+#     filename = f"Fig8b_maritime_lapse_rate_windspeed_periods_{site_name}.png"
+#     plt.savefig(output_dir / filename, dpi=300, bbox_inches="tight")
+#     plt.show()
+
+
+# # Create Figure 8b for different sites
+# filter_params_8b = {
+#     "fs": FILTER_FS,
+#     "order": FILTER_ORDER,
+#     "lower": FILTER_LOWER,
+#     "upper": FILTER_UPPER,
+# }
+
+# june_period_8b = (june_end_start, june_end_end)
+# july_period_8b = (july_mid_start, july_mid_end)
+
+# # Windward1 - Maritime only
+# create_figure_8b(
+#     "Windward1",
+#     ds_hourly,
+#     maritime_lapse_filtered_da,
+#     continental_lapse_filtered_da,
+#     output_dir,
+#     june_period_8b,
+#     july_period_8b,
+#     filter_params_8b,
+#     show_maritime=True,
+#     show_continental=False,
+# )
+
+# # Windward2 - Maritime only
+# create_figure_8b(
+#     "Windward2",
+#     ds_hourly,
+#     maritime_lapse_filtered_da,
+#     continental_lapse_filtered_da,
+#     output_dir,
+#     june_period_8b,
+#     july_period_8b,
+#     filter_params_8b,
+#     show_maritime=True,
+#     show_continental=False,
+# )
+
+# # Divide - Both maritime and continental
+# create_figure_8b(
+#     "Divide",
+#     ds_hourly,
+#     maritime_lapse_filtered_da,
+#     continental_lapse_filtered_da,
+#     output_dir,
+#     june_period_8b,
+#     july_period_8b,
+#     filter_params_8b,
+#     show_maritime=True,
+#     show_continental=True,
+# )
+
+# # Lee1 - Continental only
+# create_figure_8b(
+#     "Lee1",
+#     ds_hourly,
+#     maritime_lapse_filtered_da,
+#     continental_lapse_filtered_da,
+#     output_dir,
+#     june_period_8b,
+#     july_period_8b,
+#     filter_params_8b,
+#     show_maritime=False,
+#     show_continental=True,
+# )
+
+# # Lee2 - Continental only
+# create_figure_8b(
+#     "Lee2",
+#     ds_hourly,
+#     maritime_lapse_filtered_da,
+#     continental_lapse_filtered_da,
+#     output_dir,
+#     june_period_8b,
+#     july_period_8b,
+#     filter_params_8b,
+#     show_maritime=False,
+#     show_continental=True,
+# )
 
 
 # %%
@@ -1073,9 +1206,7 @@ ax_box = fig.add_subplot(gs_right[1, 0], sharex=ax_hist)
 # ============================================================================
 
 # Calculate lapse rate difference
-lapse_diff_raw = (
-    ds_hourly.maritime_lapse_rate - ds_hourly.continental_lapse_rate
-) * 1000
+lapse_diff_raw = (ds.maritime_lapse_rate - ds.continental_lapse_rate) * 1000
 
 # Apply Butterworth filter to difference
 lapse_diff_filtered = butterworth_filter(
@@ -1195,6 +1326,11 @@ plt.show()
 # FIGURE 3 (Histograms)
 # ============================================================================
 
+# print some statistics
+# print("Maritime median: ", maritime_clean.median())
+# print("Continental median: ", continental_clean.median())
+
+
 # Color configuration for histograms
 maritime_color = MARITIME_COLOR
 continental_color = CONTINENTAL_COLOR
@@ -1215,14 +1351,18 @@ ax1_range = fig.add_subplot(gs[1, 0], sharex=ax1)
 ax2_range = fig.add_subplot(gs[1, 1], sharex=ax2)
 
 # Convert lapse rates to °C/km for better readability
-maritime_lapse_km = ds_hourly.maritime_lapse_rate * 1000
-continental_lapse_km = ds_hourly.continental_lapse_rate * 1000
+maritime_lapse_km = ds.maritime_lapse_rate * 1000
+continental_lapse_km = ds.continental_lapse_rate * 1000
 lapse_difference_km = maritime_lapse_km - continental_lapse_km
 
 # Remove NaN values for histogram calculation
 maritime_clean = maritime_lapse_km.dropna("datetime")
 continental_clean = continental_lapse_km.dropna("datetime")
 difference_clean = lapse_difference_km.dropna("datetime")
+
+# print some statistics
+print("Maritime median: ", maritime_clean.median())
+print("Continental median: ", continental_clean.median())
 
 # Calculate statistics
 mar_mean = float(maritime_clean.mean())
@@ -1421,9 +1561,9 @@ selected_sites = ["A07", "A06", "A05"]  # Sites to include in plots (plotting or
 row_order = [0, 1, 2]  # Can change order: 0=full period, 1=zoom periods, 2=lapse rates
 
 # Get midnight prior to first datetime
-full_period_start = pd.Timestamp(ds_hourly["datetime"].values[0]).floor("D")
+full_period_start = pd.Timestamp(ds["datetime"].values[0]).floor("D")
 # Get midnight after last datetime
-full_period_end = pd.Timestamp(ds_hourly["datetime"].values[-1]).ceil("D")
+full_period_end = pd.Timestamp(ds["datetime"].values[-1]).ceil("D")
 
 # Time periods (redefined from Figure 4)
 june_end_start = pd.Timestamp("2025-06-26")
@@ -1441,12 +1581,16 @@ gs = gridspec.GridSpec(3, 2, height_ratios=[2, 1, 1], hspace=0.05, wspace=0, fig
 # Get temperature data for selected sites
 n_sites = len(selected_sites)
 # Use maritime colors from the configured color scheme
-colors = MARITIME_COLORS[:n_sites] if n_sites <= len(MARITIME_COLORS) else [get_maritime_color(i) for i in range(n_sites)]
+colors = (
+    MARITIME_COLORS[:n_sites]
+    if n_sites <= len(MARITIME_COLORS)
+    else [get_maritime_color(i) for i in range(n_sites)]
+)
 
 maritime_sites_data = {}
 site_elevations = {}
 for i, site in enumerate(selected_sites):
-    site_data = ds_hourly.where(ds_hourly.site_id == site, drop=True)
+    site_data = ds.where(ds.site_id == site, drop=True)
     if len(site_data.sensor_idx) > 0:
         maritime_sites_data[site] = site_data.temp_c.mean("sensor_idx")
         site_elevations[site] = float(site_data.elevation.mean().values)
@@ -1560,7 +1704,7 @@ for row_idx, config_idx in enumerate(row_order):
         ax.axhline(y=0, color="grey", linewidth=1.5, zorder=1)
 
         # Plot overall maritime lapse rate with filtering
-        maritime_lapse = ds_hourly.maritime_lapse_rate * 1000
+        maritime_lapse = ds.maritime_lapse_rate * 1000
         # Apply Butterworth filter to lapse rate data
         maritime_lapse_filtered = butterworth_filter(
             maritime_lapse.values,
@@ -1576,14 +1720,14 @@ for row_idx, config_idx in enumerate(row_order):
         )
         maritime_lapse_filtered_da.plot(
             ax=ax,
-            color='black',
+            color="black",
             label="All maritime sites regression",
             linewidth=2,
             alpha=0.8,
             zorder=3,
         )
         ax.fill_between(
-            ds_hourly.datetime,
+            ds.datetime,
             0,
             maritime_lapse_filtered_da,
             where=(maritime_lapse_filtered_da > 0),
@@ -1650,12 +1794,16 @@ gs = gridspec.GridSpec(3, 2, height_ratios=[2, 1, 1], hspace=0.05, wspace=0, fig
 # Get temperature data for selected continental sites
 n_cont_sites = len(selected_continental_sites)
 # Use continental colors from the configured color scheme
-cont_colors = CONTINENTAL_COLORS[:n_cont_sites] if n_cont_sites <= len(CONTINENTAL_COLORS) else [get_continental_color(i) for i in range(n_cont_sites)]
+cont_colors = (
+    CONTINENTAL_COLORS[:n_cont_sites]
+    if n_cont_sites <= len(CONTINENTAL_COLORS)
+    else [get_continental_color(i) for i in range(n_cont_sites)]
+)
 
 continental_sites_data = {}
 continental_site_elevations = {}
 for i, site in enumerate(selected_continental_sites):
-    site_data = ds_hourly.where(ds_hourly.site_id == site, drop=True)
+    site_data = ds.where(ds.site_id == site, drop=True)
     if len(site_data.sensor_idx) > 0:
         continental_sites_data[site] = site_data.temp_c.mean("sensor_idx")
         continental_site_elevations[site] = float(site_data.elevation.mean().values)
@@ -1757,7 +1905,7 @@ for row_idx, config_idx in enumerate(continental_row_order):
         ax.axhline(y=0, color="grey", linewidth=1.5, zorder=1)
 
         # Plot overall continental lapse rate with filtering
-        continental_lapse = ds_hourly.continental_lapse_rate * 1000
+        continental_lapse = ds.continental_lapse_rate * 1000
         # Apply Butterworth filter to lapse rate data
         continental_lapse_filtered = butterworth_filter(
             continental_lapse.values,
@@ -1780,7 +1928,7 @@ for row_idx, config_idx in enumerate(continental_row_order):
             zorder=3,
         )
         ax.fill_between(
-            ds_hourly.datetime,
+            ds.datetime,
             0,
             continental_lapse_filtered_da,
             where=(continental_lapse_filtered_da > 0),
@@ -1835,8 +1983,8 @@ print("ADDITIONAL ANALYSIS: Entire-Period Lapse Rate")
 print("=" * 60)
 
 site_stats = {}
-for site in sorted(ds_hourly.site_id.values):
-    site_data = ds_hourly.where(ds_hourly.site_id == site, drop=True)
+for site in sorted(ds.site_id.values):
+    site_data = ds.where(ds.site_id == site, drop=True)
     temp_data = site_data.temp_c.dropna("datetime")
 
     if len(temp_data) > 0:
@@ -1912,7 +2060,7 @@ plot_configs = [
         "r_value": mar_r_value,
         "std_err": mar_std_err,
         "color": MARITIME_COLOR,
-        "title": "Maritime Sites: Elevation vs Mean Temperature\n(Error bars show ± 1 std dev)",
+        "title": "Maritime Sites: Elevation vs Mean Temperature",
     },
     {
         "sites": cont_sites,
@@ -1924,7 +2072,7 @@ plot_configs = [
         "r_value": cont_r_value,
         "std_err": cont_std_err,
         "color": CONTINENTAL_COLOR,
-        "title": "Continental Sites: Elevation vs Mean Temperature\n(Error bars show ± 1 std dev)",
+        "title": "Continental Sites: Elevation vs Mean Temperature",
     },
 ]
 
@@ -1947,7 +2095,7 @@ for ax, config in zip(axes, plot_configs):
             ax.errorbar(
                 elevations[i],
                 mean_temps[i],
-                yerr=temp_stds[i],
+                yerr=std_err,
                 marker="o",
                 markersize=8,
                 color=color,
@@ -2004,7 +2152,7 @@ for ax, config in zip(axes, plot_configs):
                 linestyle="--",
                 linewidth=2,
                 alpha=0.8,
-                label=f"Regression: {slope * 1000:.2f} °C/km (R² = {r_value**2:.3f})",
+                label=f"Regression: {slope * 1000:.2f} °C/km",
             )
 
     # Axis formatting
@@ -2039,7 +2187,7 @@ print("=" * 60)
 
 # Create day/night masks based on hour of day
 # Nighttime: 22:00-04:00 (10p-4a), Daytime: 04:00-22:00 (4a-10p)
-hours = ds_hourly.datetime.dt.hour
+hours = ds.datetime.dt.hour
 night_mask = (hours >= 22) | (hours < 4)
 day_mask = ~night_mask
 
@@ -2048,13 +2196,11 @@ print(f"  Nighttime hours (22:00-04:00): {night_mask.sum().values} observations"
 print(f"  Daytime hours (04:00-22:00): {day_mask.sum().values} observations")
 
 # Split data by day/night
-ds_night = ds_hourly.where(night_mask, drop=True)
-ds_day = ds_hourly.where(day_mask, drop=True)
+ds_night = ds.where(night_mask, drop=True)
+ds_day = ds.where(day_mask, drop=True)
 
 # Group by date to calculate daily day/night lapse rates
-dates = pd.date_range(
-    start=ds_hourly.datetime.values[0], end=ds_hourly.datetime.values[-1], freq="D"
-)
+dates = pd.date_range(start=ds.datetime.values[0], end=ds.datetime.values[-1], freq="D")
 
 daily_lapse_rates = {
     "date": [],
@@ -2231,143 +2377,6 @@ plt.close()
 
 print("Day/night lapse rate analysis completed!")
 
-# # %%
-# # Additional Analysis 3: Influence Plot for Entire-Period Regression
-# print("\n" + "=" * 60)
-# print("ADDITIONAL ANALYSIS: Regression Influence Plot")
-# print("=" * 60)
-
-# # Calculate regression diagnostics
-# from scipy.stats import t
-
-# n = len(sites)
-# X = np.column_stack([np.ones(n), elevations])  # Design matrix
-# y = np.array(mean_temps)
-
-# # Calculate hat matrix and leverage
-# XTX_inv = np.linalg.inv(X.T @ X)
-# H = X @ XTX_inv @ X.T
-# leverage = np.diag(H)
-
-# # Calculate residuals and standardized residuals
-# fitted = slope * np.array(elevations) + intercept
-# residuals = y - fitted
-# mse = np.sum(residuals**2) / (n - 2)
-# residual_std = np.sqrt(mse * (1 - leverage))
-# standardized_residuals = residuals / residual_std
-
-# # Calculate studentized residuals
-# studentized_residuals = []
-# for i in range(n):
-#     # Leave-one-out residual
-#     X_i = np.delete(X, i, axis=0)
-#     y_i = np.delete(y, i)
-#     beta_i = np.linalg.solve(X_i.T @ X_i, X_i.T @ y_i)
-#     fitted_i = X[i] @ beta_i
-#     residual_i = y[i] - fitted_i
-
-#     # MSE without point i
-#     mse_i = np.sum((y_i - X_i @ beta_i) ** 2) / (n - 3)
-#     se_i = np.sqrt(mse_i * (X[i] @ XTX_inv @ X[i].T))
-
-#     studentized_residuals.append(residual_i / se_i)
-
-# studentized_residuals = np.array(studentized_residuals)
-
-# # Calculate Cook's distance
-# cooks_d = (standardized_residuals**2 / 2) * (leverage / (1 - leverage))
-
-# print("Regression diagnostics:")
-# for i, site in enumerate(sites):
-#     print(
-#         f"{site}: Leverage={leverage[i]:.3f}, Studentized Resid={studentized_residuals[i]:.3f}, Cook's D={cooks_d[i]:.3f}"
-#     )
-
-# # Create influence plot
-# fig, ax = plt.subplots(figsize=(10, 8))
-
-# # Plot leverage vs studentized residuals
-# scatter = ax.scatter(
-#     leverage,
-#     studentized_residuals,
-#     c=[colors_dict[site] for site in sites],
-#     s=100,
-#     alpha=0.8,
-#     edgecolors="black",
-#     linewidth=1,
-# )
-
-# # Add site labels
-# for i, site in enumerate(sites):
-#     ax.annotate(
-#         site,
-#         (leverage[i], studentized_residuals[i]),
-#         xytext=(5, 5),
-#         textcoords="offset points",
-#         fontsize=10,
-#         fontweight="bold",
-#     )
-
-# # Add Cook's distance contours
-# lev_range = np.linspace(0, max(leverage) * 1.1, 100)
-# for d in [0.5, 1.0]:  # Cook's distance contours
-#     # Cook's D = (stud_resid^2 / p) * (h / (1-h))
-#     # Solving for stud_resid: stud_resid = ±sqrt(D * p * (1-h) / h)
-#     p = 2  # number of parameters
-#     upper_contour = np.sqrt(d * p * (1 - lev_range) / lev_range)
-#     lower_contour = -upper_contour
-
-#     # Only plot where leverage is reasonable (avoid division by very small numbers)
-#     valid_idx = lev_range > 0.01
-#     ax.plot(
-#         lev_range[valid_idx],
-#         upper_contour[valid_idx],
-#         "gray",
-#         linestyle="--",
-#         alpha=0.7,
-#     )
-#     ax.plot(
-#         lev_range[valid_idx],
-#         lower_contour[valid_idx],
-#         "gray",
-#         linestyle="--",
-#         alpha=0.7,
-#     )
-
-#     # Label contours
-#     if len(lev_range[valid_idx]) > 0:
-#         mid_idx = len(lev_range[valid_idx]) // 2
-#         ax.text(
-#             lev_range[valid_idx][mid_idx],
-#             upper_contour[valid_idx][mid_idx] + 0.1,
-#             f"Cook's D = {d}",
-#             fontsize=9,
-#             alpha=0.7,
-#             ha="center",
-#         )
-
-# ax.set_xlabel("Leverage")
-# ax.set_ylabel("Studentized Residuals")
-# ax.set_title(
-#     "Influence Plot: Leverage vs Studentized Residuals\n(Dashed lines show Cook's Distance contours)"
-# )
-# ax.grid(True, alpha=0.3)
-# ax.axhline(y=0, color="black", linestyle="-", alpha=0.3)
-
-# # Add legend for site types
-# from matplotlib.patches import Patch
-
-# legend_elements = [
-#     Patch(facecolor="red", alpha=0.8, label="Maritime Sites"),
-#     Patch(facecolor="blue", alpha=0.8, label="Continental Sites"),
-# ]
-# ax.legend(handles=legend_elements, loc="best")
-
-# plt.tight_layout()
-# plt.savefig(output_dir / "lapse_rate_influence_plot.png", dpi=300, bbox_inches="tight")
-# plt.close()
-
-# print("Influence plot created!")
 
 # %%
 # ============================================================================
@@ -2410,7 +2419,12 @@ maritime_lapse_filtered_da.plot(
     ax=ax_ts, label="Maritime", color=MARITIME_COLOR, alpha=0.7, linewidth=1.5, zorder=3
 )
 continental_lapse_filtered_da.plot(
-    ax=ax_ts, label="Continental", color=CONTINENTAL_COLOR, alpha=0.7, linewidth=1.5, zorder=3
+    ax=ax_ts,
+    label="Continental",
+    color=CONTINENTAL_COLOR,
+    alpha=0.7,
+    linewidth=1.5,
+    zorder=3,
 )
 
 # Set formatting like Figure 4
@@ -2527,17 +2541,4 @@ plt.savefig(
 plt.show()
 
 print("Figure 7: Full period lapse rates with histogram created!")
-
-print(f"\nAll plots have been saved to: {output_dir}")
-print("Generated plots:")
-print("  - Fig4_lapse_rate_timeseries.png")
-print("  - Fig5_lapse_rate_difference.png")
-print("  - Fig3_lapse_rate_histograms.png")
-print("  - Fig1_maritime_sites_analysis.png")
-print("  - Fig2_continental_sites_analysis.png")
-print("  - Fig6_entire_period_lapse_rate_scatter.png")
-print("  - Fig7_full_period_lapse_rates_with_histogram.png")
-print("  - day_night_lapse_rates.png")
-print("  - lapse_rate_influence_plot.png")
-
 # %%
