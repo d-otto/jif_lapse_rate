@@ -1,0 +1,75 @@
+<?xml version='1.0'?>
+<lgrnet-config last-backup="1990-01-01T00:00:00" last-device-id="9">
+  <settings>
+    <setting id="1">1</setting>
+    <setting bale-count="5" bale-size="1440000" id="2" to-disc="true" />
+    <setting bale-count="5" bale-size="1440000" id="3" to-disc="true" />
+    <setting bale-count="5" bale-size="1440000" id="4" to-disc="true" />
+    <setting bale-count="5" bale-size="1440000" id="5" to-disc="true" />
+    <setting id="6">1</setting>
+    <setting id="7">1</setting>
+    <setting id="9">2</setting>
+    <setting id="11">4093</setting>
+    <setting id="12">0</setting>
+    <setting bale-count="5" bale-size="1200000" id="15" to-disc="true" />
+    <setting id="16">0</setting>
+    <setting id="17">1990-01-01T00:00:00</setting>
+    <setting id="18">604800000</setting>
+    <setting id="19">1</setting>
+    <setting id="20" />
+    <setting id="21">%a\loggernet.bkp</setting>
+    <setting id="22">5</setting>
+    <setting id="23">900000</setting>
+    <setting id="24">C:\Campbellsci\PC400\sys\bin</setting>
+    <setting id="25">C:\Campbellsci\PC400\</setting>
+    <setting id="26">92</setting>
+    <setting id="27" />
+    <setting id="28">0</setting>
+    <setting base="0" enabled="false" id="29" interval="86400000" max-dev="10000" />
+    <setting base="1990-01-01T00:00:00" id="30" interval="300000" is-on="false" prim-retry-interval="120000" prim-retry-max_count="3" sec-retry-interval="86400000" />
+    <setting id="31">1</setting>
+    <setting id="32">0</setting>
+    <setting id="33">0</setting>
+    <setting id="34">1</setting>
+    <setting id="35">0</setting>
+    <setting id="36">0</setting>
+    <setting id="37">2</setting>
+    <setting id="38">10485760</setting>
+    <setting id="39">2</setting>
+    <setting id="40">1</setting>
+    <setting id="41">0</setting>
+    <setting id="42">3600000</setting>
+    <setting id="43" />
+    <setting id="44">0</setting>
+    <setting id="45">1</setting>
+    <setting id="46">2</setting>
+    <setting id="47">1</setting>
+    <setting id="48">1</setting>
+    <setting id="49">2</setting>
+    <setting id="50">2</setting>
+    <setting id="51">2</setting>
+    <setting id="52">%a\%s_%n.dat</setting>
+    <setting id="53">1</setting>
+    <setting id="54">1</setting>
+    <setting id="55">1</setting>
+    <setting id="56">1</setting>
+    <setting id="57">3</setting>
+    <setting id="58">6619599</setting>
+    <setting id="59">3</setting>
+    <setting id="60">3</setting>
+    <setting id="61">3</setting>
+    <setting id="62">3</setting>
+    <setting id="63">1</setting>
+    <setting id="64">-1</setting>
+    <setting id="65">0</setting>
+    <setting id="69">86400000</setting>
+    <setting id="70">1</setting>
+    <setting id="71" />
+    <setting id="72" />
+    <setting id="73" />
+    <setting id="74" />
+    <setting id="75">campbellcloud.io</setting></settings>
+  <data-brokers />
+  <devices />
+  <replication />
+</lgrnet-config>

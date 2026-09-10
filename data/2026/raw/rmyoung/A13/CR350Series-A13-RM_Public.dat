@@ -1,0 +1,5 @@
+"TOA5","CR350Series-A13-RM","CR350","11707","CR350.Std.01.07","CPU:rmy93500_sdi12.CRB","54723","Public"
+"TIMESTAMP","RECORD","WindSpeed_ms","WindDir_deg","WindStatusCode","Temperature_C","RelHumidity_pct","Pressure_hPa","RainTips","StatusCode","LoggerTemp_C","BattV","Rainfall_mm","ConfigResp_XF(1)","ConfigResp_XF(2)","ConfigResp_UW(1)","ConfigResp_UW(2)","ConfigResp_UT(1)","ConfigResp_UT(2)","ConfigResp_UP(1)","ConfigResp_UP(2)","ConfigResp_XS(1)","ConfigResp_XS(2)","ConfigResp_CE(1)","ConfigResp_CE(2)","ConfigResp_CD(1)","ConfigResp_CD(2)","ConfigResp_RE(1)","ConfigResp_RE(2)"
+"TS","RN","","","","","","","","","","","","","","","","","","","","","","","","","","",""
+"","","","","","","","","","","","","","","","","","","","","","","","","","","","",""
+"2026-08-27 09:29:52.192",5,"NAN",0,0,"NAN",0,0,0,0,23.12178,0,0,"NAN","","NAN","","NAN","","NAN","","NAN","","NAN","","NAN","","NAN",""

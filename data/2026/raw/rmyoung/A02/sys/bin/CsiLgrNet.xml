@@ -1,0 +1,1023 @@
+<?xml version='1.0'?>
+<lgrnet-config last-backup="1990-01-01T00:00:00" last-device-id="3">
+  <settings>
+    <setting id="1">1</setting>
+    <setting bale-count="5" bale-size="1440000" id="2" to-disc="true" />
+    <setting bale-count="5" bale-size="1440000" id="3" to-disc="true" />
+    <setting bale-count="5" bale-size="1440000" id="4" to-disc="true" />
+    <setting bale-count="5" bale-size="1440000" id="5" to-disc="true" />
+    <setting id="6">1</setting>
+    <setting id="7">1</setting>
+    <setting id="9">2</setting>
+    <setting id="11">4093</setting>
+    <setting id="12">0</setting>
+    <setting bale-count="5" bale-size="1200000" id="15" to-disc="true" />
+    <setting id="16">0</setting>
+    <setting id="17">1990-01-01T00:00:00</setting>
+    <setting id="18">604800000</setting>
+    <setting id="19">1</setting>
+    <setting id="20" />
+    <setting id="21">%a\loggernet.bkp</setting>
+    <setting id="22">5</setting>
+    <setting id="23">900000</setting>
+    <setting id="24">C:\Campbellsci\PC400\sys\bin</setting>
+    <setting id="25">C:\Campbellsci\PC400\</setting>
+    <setting id="26">92</setting>
+    <setting id="27" />
+    <setting id="28">0</setting>
+    <setting base="0" enabled="false" id="29" interval="86400000" max-dev="10000" />
+    <setting base="1990-01-01T00:00:00" id="30" interval="300000" is-on="false" prim-retry-interval="120000" prim-retry-max_count="3" sec-retry-interval="86400000" />
+    <setting id="31">1</setting>
+    <setting id="32">0</setting>
+    <setting id="33">0</setting>
+    <setting id="34">1</setting>
+    <setting id="35">0</setting>
+    <setting id="36">0</setting>
+    <setting id="37">2</setting>
+    <setting id="38">10485760</setting>
+    <setting id="39">2</setting>
+    <setting id="40">1</setting>
+    <setting id="41">0</setting>
+    <setting id="42">3600000</setting>
+    <setting id="43" />
+    <setting id="44">0</setting>
+    <setting id="45">1</setting>
+    <setting id="46">2</setting>
+    <setting id="47">1</setting>
+    <setting id="48">1</setting>
+    <setting id="49">2</setting>
+    <setting id="50">2</setting>
+    <setting id="51">2</setting>
+    <setting id="52">%a\%s_%n.dat</setting>
+    <setting id="53">1</setting>
+    <setting id="54">1</setting>
+    <setting id="55">1</setting>
+    <setting id="56">1</setting>
+    <setting id="57">3</setting>
+    <setting id="58">6619599</setting>
+    <setting id="59">3</setting>
+    <setting id="60">3</setting>
+    <setting id="61">3</setting>
+    <setting id="62">3</setting>
+    <setting id="63">1</setting>
+    <setting id="64">-1</setting>
+    <setting id="65">0</setting>
+    <setting id="69">86400000</setting>
+    <setting id="70">1</setting>
+    <setting id="71" />
+    <setting id="72" />
+    <setting id="73" />
+    <setting id="74" />
+    <setting id="75">campbellcloud.io</setting>
+  </settings>
+  <data-brokers>
+    <data-broker broker-version="1" creation-date="20260827 11:22:45.587" id="2" model-no="CR350" name="A-08-RM" os-version="CR350.Std.01.07" program-name="CPU:rmy93500_sdi12.CRB" program-sig="54723" serial-no="11708" type="1">
+      <table crc="2596691882" interval="0" manually-resized="false" name="DataTableInfo" only-in-memory="false" orig-size="1" should-sort-pieces="true" size="2">
+        <column data-type="11" description="" modifying-command="0" name="DataTableName" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="1" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="276" name="SkippedRecord" process="" units="">
+          <dimensions>
+            <dim val="2" />
+          </dimensions>
+          <pieces>
+            <piece count="2" native-order="2" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="DataRecordSize" process="" units="records">
+          <dimensions>
+            <dim val="2" />
+          </dimensions>
+          <pieces>
+            <piece count="2" native-order="3" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="SecsPerRecord" process="" units="">
+          <dimensions>
+            <dim val="2" />
+          </dimensions>
+          <pieces>
+            <piece count="2" native-order="4" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="DataFillDays" process="" units="days">
+          <dimensions>
+            <dim val="2" />
+          </dimensions>
+          <pieces>
+            <piece count="2" native-order="5" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="0" name="DataFilled" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="1" />
+            <dim val="32" />
+          </dimensions>
+          <pieces>
+            <piece count="64" native-order="6" start-index="1" />
+          </pieces>
+        </column>
+      </table>
+      <table crc="4004839156" interval="0" manually-resized="false" name="Public" only-in-memory="false" orig-size="1" should-sort-pieces="true" size="2">
+        <column data-type="9" description="" modifying-command="276" name="WindSpeed_ms" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="1" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="276" name="WindDir_deg" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="2" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="276" name="WindStatusCode" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="3" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="276" name="Temperature_C" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="4" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="276" name="RelHumidity_pct" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="5" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="276" name="Pressure_hPa" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="6" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="276" name="RainTips" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="7" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="276" name="StatusCode" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="8" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="276" name="LoggerTemp_C" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="9" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="276" name="BattV" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="10" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="276" name="Rainfall_mm" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="11" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="276" name="ConfigResp_XF" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="12" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="276" name="ConfigResp_UW" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="13" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="276" name="ConfigResp_UT" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="14" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="276" name="ConfigResp_UP" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="15" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="276" name="ConfigResp_XS" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="16" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="276" name="ConfigResp_CE" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="17" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="276" name="ConfigResp_CD" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="18" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="276" name="ConfigResp_RE" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="19" start-index="1" />
+          </pieces>
+        </column>
+      </table>
+      <table crc="1621780143" interval="0" manually-resized="false" name="SensorConfig" only-in-memory="false" orig-size="1" should-sort-pieces="true" size="2">
+        <column data-type="11" description="Smp" modifying-command="0" name="ConfigResp_XF" process="Smp" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="1" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="Smp" modifying-command="0" name="ConfigResp_UW" process="Smp" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="2" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="Smp" modifying-command="0" name="ConfigResp_UT" process="Smp" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="3" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="Smp" modifying-command="0" name="ConfigResp_UP" process="Smp" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="4" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="Smp" modifying-command="0" name="ConfigResp_XS" process="Smp" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="5" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="Smp" modifying-command="0" name="ConfigResp_CE" process="Smp" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="6" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="Smp" modifying-command="0" name="ConfigResp_CD" process="Smp" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="7" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="Smp" modifying-command="0" name="ConfigResp_RE" process="Smp" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="24" />
+          </dimensions>
+          <pieces>
+            <piece count="48" native-order="8" start-index="1" />
+          </pieces>
+        </column>
+      </table>
+      <table crc="361229264" interval="0" manually-resized="false" name="Status" only-in-memory="false" orig-size="1" should-sort-pieces="true" size="2">
+        <column data-type="11" description="" modifying-command="0" name="OSVersion" process="" units="">
+          <dimensions>
+            <dim val="32" />
+          </dimensions>
+          <pieces>
+            <piece count="32" native-order="1" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="0" name="OSDate" process="" units="">
+          <dimensions>
+            <dim val="12" />
+          </dimensions>
+          <pieces>
+            <piece count="12" native-order="2" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="OSSignature" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="3" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="0" name="SerialNumber" process="" units="">
+          <dimensions>
+            <dim val="12" />
+          </dimensions>
+          <pieces>
+            <piece count="12" native-order="4" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="276" name="StationName" process="" units="">
+          <dimensions>
+            <dim val="64" />
+          </dimensions>
+          <pieces>
+            <piece count="64" native-order="5" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="0" name="ProgName" process="" units="">
+          <dimensions>
+            <dim val="64" />
+          </dimensions>
+          <pieces>
+            <piece count="64" native-order="6" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="14" description="" modifying-command="0" name="StartTime" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="7" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="RunSignature" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="8" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="ProgSignature" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="9" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="276" name="WatchdogErrors" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="10" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="PanelTemp" process="" units="DegC">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="11" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="Battery" process="" units="Volts">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="12" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="LithiumBattery" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="13" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="0" name="CompileResults" process="" units="">
+          <dimensions>
+            <dim val="256" />
+          </dimensions>
+          <pieces>
+            <piece count="256" native-order="14" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="StartUpCode" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="15" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="ProgErrors" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="16" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="276" name="VarOutOfBound" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="17" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="276" name="SkippedScan" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="18" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="31" description="" modifying-command="0" name="WiFiUpdateReq" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="19" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="DataStorageSize" process="" units="bytes">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="20" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="DataStorageFree" process="" units="bytes">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="21" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="SerialFlashErrors" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="22" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="MemorySize" process="" units="bytes">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="23" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="MemoryFree" process="" units="bytes">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="24" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="CPUDriveFree" process="" units="bytes">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="25" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="0" name="CommsMemFree" process="" units="">
+          <dimensions>
+            <dim val="84" />
+          </dimensions>
+          <pieces>
+            <piece count="84" native-order="26" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="276" name="FullMemReset" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="27" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="MeasureTime" process="" units="usec">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="28" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="0" name="ProcessTime" process="" units="usec">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="29" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="6" description="" modifying-command="276" name="MaxProcTime" process="" units="usec">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="30" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="31" description="" modifying-command="276" name="PortStatus" process="" units="">
+          <dimensions>
+            <dim val="2" />
+          </dimensions>
+          <pieces>
+            <piece count="2" native-order="31" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="0" name="PortConfig" process="" units="">
+          <dimensions>
+            <dim val="2" />
+            <dim val="8" />
+          </dimensions>
+          <pieces>
+            <piece count="16" native-order="32" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="31" description="" modifying-command="276" name="SW12Volts" process="" units="">
+          <dimensions>
+            <dim val="2" />
+          </dimensions>
+          <pieces>
+            <piece count="2" native-order="33" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="11" description="" modifying-command="0" name="PakBusRoutes" process="" units="">
+          <dimensions>
+            <dim val="256" />
+          </dimensions>
+          <pieces>
+            <piece count="256" native-order="34" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="CalGainSlow2500" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="35" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="CalGainMed2500" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="36" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="CalGainFast2500" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="37" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="CalGainSlow34" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="38" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="CalGainMed34" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="39" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="CalGainFast34" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="40" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="" modifying-command="0" name="CalOffset" process="" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="41" start-index="1" />
+          </pieces>
+        </column>
+      </table>
+      <table crc="2713822280" interval="300000000000" manually-resized="false" name="Weather" only-in-memory="false" orig-size="210240" should-sort-pieces="true" size="137970">
+        <column data-type="9" description="WVc" modifying-command="0" name="WindSpeed_ms_WVc" process="WVc" units="">
+          <dimensions>
+            <dim val="3" />
+          </dimensions>
+          <pieces>
+            <piece count="3" native-order="1" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Max" modifying-command="0" name="WindSpeed_ms_Max" process="Max" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="2" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="14" description="TMx" modifying-command="0" name="WindSpeed_ms_TMx" process="TMx" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="3" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Std" modifying-command="0" name="WindSpeed_ms_Std" process="Std" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="4" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Avg" modifying-command="0" name="Temperature_C_Avg" process="Avg" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="5" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Std" modifying-command="0" name="Temperature_C_Std" process="Std" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="6" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Avg" modifying-command="0" name="RelHumidity_pct_Avg" process="Avg" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="7" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Std" modifying-command="0" name="RelHumidity_pct_Std" process="Std" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="8" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Avg" modifying-command="0" name="Pressure_hPa_Avg" process="Avg" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="9" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Std" modifying-command="0" name="Pressure_hPa_Std" process="Std" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="10" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Smp" modifying-command="0" name="RainTips" process="Smp" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="11" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Smp" modifying-command="0" name="Rainfall_mm" process="Smp" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="12" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Avg" modifying-command="0" name="LoggerTemp_C_Avg" process="Avg" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="13" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Smp" modifying-command="0" name="BattV" process="Smp" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="14" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Smp" modifying-command="0" name="WindStatusCode" process="Smp" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="15" start-index="1" />
+          </pieces>
+        </column>
+        <column data-type="9" description="Smp" modifying-command="0" name="StatusCode" process="Smp" units="">
+          <dimensions />
+          <pieces>
+            <piece count="1" native-order="16" start-index="1" />
+          </pieces>
+        </column>
+      </table>
+    </data-broker>
+  </data-brokers>
+  <devices>
+    <device id="1" level="0" name="COM3" type="11">
+      <class-dev error-rate="0">
+        <settings>
+          <setting id="2">0</setting>
+          <setting id="3">2048</setting>
+          <setting id="4">0</setting>
+          <setting id="15">COM3</setting>
+          <setting id="22">1</setting>
+          <setting id="36">0</setting>
+          <setting id="69">2000</setting>
+          <setting id="70">115200</setting>
+          <setting id="83">0</setting>
+          <setting id="85">4000</setting>
+          <setting id="90" />
+          <setting id="122">0</setting>
+          <setting id="149">1</setting>
+          <setting id="150">8</setting>
+          <setting id="151">1</setting>
+        </settings>
+      </class-dev>
+    </device>
+    <device id="2" level="1" name="PakBusPort" type="36">
+      <class-dev error-rate="0">
+        <settings>
+          <setting id="2">0</setting>
+          <setting id="3">1008</setting>
+          <setting id="4">0</setting>
+          <setting id="22">1</setting>
+          <setting id="70">115200</setting>
+          <setting id="71">0</setting>
+          <setting id="72">1</setting>
+          <setting id="79">4093</setting>
+          <setting id="83">0</setting>
+          <setting id="86">PakBusPort</setting>
+          <setting id="90" />
+          <setting id="93">
+            <range begin="1" end="4094" />
+          </setting>
+          <setting id="95">0</setting>
+          <setting id="109">0</setting>
+          <setting id="116" />
+          <setting id="130" />
+        </settings>
+      </class-dev>
+    </device>
+    <device id="3" level="2" name="A-08-RM" type="78">
+      <class-bmp5-datalogger reported-station-name="11708" uses-new-control="true">
+        <files-history />
+      </class-bmp5-datalogger>
+      <class-clocked last-check="1156677826570000000" last-diff="-14158000000" last-set="0">
+        <history>
+          <time val="16" />
+          <time val="16" />
+          <time val="15" />
+          <time val="15" />
+          <time val="0" />
+          <time val="16" />
+          <time val="0" />
+          <time val="15" />
+          <time val="0" />
+          <time val="0" />
+        </history>
+      </class-clocked>
+      <class-logger collect-primary-retry-count="0" collect-retry-count="0" collect-state="0" last-collect="1156678158551000000" last-collect-attempt="1156678146848000000" last-replication-stamp="1990-01-01T00:00:00" table-defs-state="2">
+        <replication-cursors>
+          <DataTableInfo file-mark-no="0" record-no="0" />
+          <Public file-mark-no="0" record-no="0" />
+          <SensorConfig file-mark-no="0" record-no="0" />
+          <Status file-mark-no="0" record-no="0" />
+          <Weather file-mark-no="0" record-no="0" />
+        </replication-cursors>
+        <collect-areas>
+          <collect-area name="DataTableInfo" persistence="2" type="7">
+            <class-bmp5-tablecollectarea logger-def-sig="61617" previously-polled="false" table-no="4" time-type="14">
+              <tdf-buffer>446174615461626c65496e666f00000000010e000000000000000000000000000000008b446174615461626c654e616d650000000000000000010000003000000002000000180000000006536b69707065645265636f726400000000000000000100000002000000020000000086446174615265636f726453697a650000007265636f72647300000000000100000002000000020000000089536563735065725265636f7264000000000000000001000000020000000200000000894461746146696c6c44617973000000646179730000000000010000000200000002000000008b4461746146696c6c6564000000000000000001000000400000000200000001000000200000000000</tdf-buffer>
+            </class-bmp5-tablecollectarea>
+            <class-table-area holes-lost-retro="false" newest-record-no="2" stamp="1156677680385000000" was-reset="false">
+              <records-pending />
+              <records-collected>
+                <range begin="2" end="2" />
+              </records-collected>
+            </class-table-area>
+            <settings>
+              <setting id="1">
+                <name val="DataTableInfo" />
+              </setting>
+              <setting id="2">0</setting>
+              <setting id="15">1</setting>
+              <setting id="16">3</setting>
+              <setting id="17">C:\Campbellsci\PC400\A-08-RM_DataTableInfo.dat</setting>
+              <setting id="18">10</setting>
+              <setting id="20">3</setting>
+              <setting id="21">C:\Campbellsci\PC400\A-08-RM_DataTableInfo.dat</setting>
+              <setting id="22">1</setting>
+              <setting id="24">1</setting>
+              <setting id="25">1</setting>
+              <setting id="26">1</setting>
+              <setting id="27">1</setting>
+              <setting id="28">3</setting>
+              <setting id="29">4</setting>
+              <setting id="30">6619599</setting>
+              <setting id="31">3</setting>
+              <setting id="32">3</setting>
+              <setting id="33">3</setting>
+              <setting id="34">3</setting>
+              <setting id="36">C:\Campbellsci\PC400\A-08-RM_DataTableInfo.dat</setting>
+              <setting id="37">86400000</setting>
+            </settings>
+          </collect-area>
+          <collect-area name="Public" persistence="2" type="7">
+            <class-bmp5-tablecollectarea logger-def-sig="49633" previously-polled="false" table-no="5" time-type="14">
+              <tdf-buffer>5075626c696300000000010e000000000000000000000000000000000957696e6453706565645f6d7300000000000000000100000001000000000957696e644469725f64656700000000000000000100000001000000000957696e64537461747573436f646500000000000000000100000001000000000954656d70657261747572655f4300000000000000000100000001000000000952656c48756d69646974795f70637400000000000000000100000001000000000950726573737572655f6850610000000000000000010000000100000000095261696e54697073000000000000000001000000010000000009537461747573436f64650000000000000000010000000100000000094c6f6767657254656d705f4300000000000000000100000001000000000942617474560000000000000000010000000100000000095261696e66616c6c5f6d6d00000000000000000100000001000000000b436f6e666967526573705f5846000000000000000001000000300000000200000018000000000b436f6e666967526573705f5557000000000000000001000000300000000200000018000000000b436f6e666967526573705f5554000000000000000001000000300000000200000018000000000b436f6e666967526573705f5550000000000000000001000000300000000200000018000000000b436f6e666967526573705f5853000000000000000001000000300000000200000018000000000b436f6e666967526573705f4345000000000000000001000000300000000200000018000000000b436f6e666967526573705f4344000000000000000001000000300000000200000018000000000b436f6e666967526573705f52450000000000000000010000003000000002000000180000000000</tdf-buffer>
+            </class-bmp5-tablecollectarea>
+            <class-table-area holes-lost-retro="false" newest-record-no="7" stamp="1156678112063000000" was-reset="false">
+              <records-pending />
+              <records-collected>
+                <range begin="7" end="7" />
+              </records-collected>
+            </class-table-area>
+            <settings>
+              <setting id="1">
+                <name val="Public" />
+              </setting>
+              <setting id="2">0</setting>
+              <setting id="15">1</setting>
+              <setting id="16">3</setting>
+              <setting id="17">C:\Campbellsci\PC400\A-08-RM_Public.dat</setting>
+              <setting id="18">10</setting>
+              <setting id="20">3</setting>
+              <setting id="21">C:\Campbellsci\PC400\A-08-RM_Public.dat</setting>
+              <setting id="22">1</setting>
+              <setting id="24">1</setting>
+              <setting id="25">1</setting>
+              <setting id="26">1</setting>
+              <setting id="27">1</setting>
+              <setting id="28">3</setting>
+              <setting id="29">5</setting>
+              <setting id="30">6619599</setting>
+              <setting id="31">3</setting>
+              <setting id="32">3</setting>
+              <setting id="33">3</setting>
+              <setting id="34">3</setting>
+              <setting id="36">C:\Campbellsci\PC400\A-08-RM_Public.dat</setting>
+              <setting id="37">86400000</setting>
+            </settings>
+          </collect-area>
+          <collect-area name="SensorConfig" persistence="2" type="7">
+            <class-bmp5-tablecollectarea logger-def-sig="9463" previously-polled="false" table-no="3" time-type="14">
+              <tdf-buffer>53656e736f72436f6e66696700000000010e000000000000000000000000000000008b436f6e666967526573705f58460000536d700000536d700000000001000000300000000200000018000000008b436f6e666967526573705f55570000536d700000536d700000000001000000300000000200000018000000008b436f6e666967526573705f55540000536d700000536d700000000001000000300000000200000018000000008b436f6e666967526573705f55500000536d700000536d700000000001000000300000000200000018000000008b436f6e666967526573705f58530000536d700000536d700000000001000000300000000200000018000000008b436f6e666967526573705f43450000536d700000536d700000000001000000300000000200000018000000008b436f6e666967526573705f43440000536d700000536d700000000001000000300000000200000018000000008b436f6e666967526573705f52450000536d700000536d7000000000010000003000000002000000180000000000</tdf-buffer>
+            </class-bmp5-tablecollectarea>
+            <class-table-area holes-lost-retro="false" newest-record-no="2" stamp="1156677692320000000" was-reset="false">
+              <records-pending />
+              <records-collected>
+                <range begin="2" end="2" />
+              </records-collected>
+            </class-table-area>
+            <settings>
+              <setting id="1">
+                <name val="SensorConfig" />
+              </setting>
+              <setting id="2">0</setting>
+              <setting id="15">1</setting>
+              <setting id="16">3</setting>
+              <setting id="17">C:\Campbellsci\PC400\A-08-RM_SensorConfig.dat</setting>
+              <setting id="18">10</setting>
+              <setting id="20">3</setting>
+              <setting id="21">C:\Campbellsci\PC400\A-08-RM_SensorConfig.dat</setting>
+              <setting id="22">1</setting>
+              <setting id="24">1</setting>
+              <setting id="25">1</setting>
+              <setting id="26">1</setting>
+              <setting id="27">1</setting>
+              <setting id="28">3</setting>
+              <setting id="29">3</setting>
+              <setting id="30">6619599</setting>
+              <setting id="31">3</setting>
+              <setting id="32">3</setting>
+              <setting id="33">3</setting>
+              <setting id="34">3</setting>
+              <setting id="36">C:\Campbellsci\PC400\A-08-RM_SensorConfig.dat</setting>
+              <setting id="37">86400000</setting>
+            </settings>
+          </collect-area>
+          <collect-area name="Status" persistence="2" type="7">
+            <class-bmp5-tablecollectarea logger-def-sig="57960" previously-polled="false" table-no="1" time-type="14">
+              <tdf-buffer>53746174757300000000010e000000000000000000000000000000008b4f5356657273696f6e0000000000000000010000002000000020000000008b4f53446174650000000000000000010000000c0000000c00000000864f535369676e617475726500000000000000000100000001000000008b53657269616c4e756d6265720000000000000000010000000c0000000c000000000b53746174696f6e4e616d650000000000000000010000004000000040000000008b50726f674e616d650000000000000000010000004000000040000000008e537461727454696d6500000000000000000100000001000000008652756e5369676e617475726500000000000000000100000001000000008650726f675369676e61747572650000000000000000010000000100000000065761746368646f674572726f727300000000000000000100000001000000008950616e656c54656d700000004465674300000000000100000001000000008942617474657279000000566f6c74730000000000010000000100000000894c69746869756d4261747465727900000000000000000100000001000000008b436f6d70696c65526573756c74730000000000000000010000010000000100000000008653746172745570436f646500000000000000000100000001000000008650726f674572726f72730000000000000000010000000100000000065661724f75744f66426f756e64000000000000000001000000010000000006536b69707065645363616e00000000000000000100000001000000009c576946695570646174655265710000000000000000010000000100000000864461746153746f7261676553697a6500000062797465730000000000010000000100000000864461746153746f7261676546726565000000627974657300000000000100000001000000008653657269616c466c6173684572726f72730000000000000000010000000100000000864d656d6f727953697a6500000062797465730000000000010000000100000000864d656d6f7279467265650000006279746573000000000001000000010000000086435055447269766546726565000000627974657300000000000100000001000000008b436f6d6d734d656d467265650000000000000000010000005400000054000000000646756c6c4d656d52657365740000000000000000010000000100000000864d65617375726554696d650000007573656300000000000100000001000000008650726f6365737354696d65000000757365630000000000010000000100000000064d617850726f6354696d650000007573656300000000000100000001000000001c506f72745374617475730000000000000000010000000200000002000000008b506f7274436f6e666967000000000000000001000000100000000200000008000000001c53573132566f6c74730000000000000000010000000200000002000000008b50616b427573526f757465730000000000000000010000010000000100000000008943616c4761696e536c6f773235303000000000000000000100000001000000008943616c4761696e4d65643235303000000000000000000100000001000000008943616c4761696e466173743235303000000000000000000100000001000000008943616c4761696e536c6f77333400000000000000000100000001000000008943616c4761696e4d6564333400000000000000000100000001000000008943616c4761696e46617374333400000000000000000100000001000000008943616c4f6666736574000000000000000001000000010000000000</tdf-buffer>
+            </class-bmp5-tablecollectarea>
+            <class-table-area holes-lost-retro="false" newest-record-no="1" stamp="1156678112087000000" was-reset="false">
+              <records-pending />
+              <records-collected>
+                <range begin="1" end="1" />
+              </records-collected>
+            </class-table-area>
+            <settings>
+              <setting id="1">
+                <name val="Status" />
+              </setting>
+              <setting id="2">0</setting>
+              <setting id="15">1</setting>
+              <setting id="16">3</setting>
+              <setting id="17">C:\Campbellsci\PC400\A-08-RM_Status.dat</setting>
+              <setting id="18">10</setting>
+              <setting id="20">3</setting>
+              <setting id="21">C:\Campbellsci\PC400\A-08-RM_Status.dat</setting>
+              <setting id="22">1</setting>
+              <setting id="24">1</setting>
+              <setting id="25">1</setting>
+              <setting id="26">1</setting>
+              <setting id="27">1</setting>
+              <setting id="28">3</setting>
+              <setting id="29">1</setting>
+              <setting id="30">6619599</setting>
+              <setting id="31">3</setting>
+              <setting id="32">3</setting>
+              <setting id="33">3</setting>
+              <setting id="34">3</setting>
+              <setting id="36">C:\Campbellsci\PC400\A-08-RM_Status.dat</setting>
+              <setting id="37">86400000</setting>
+            </settings>
+          </collect-area>
+          <collect-area name="Weather" persistence="2" type="7">
+            <class-bmp5-tablecollectarea logger-def-sig="5539" previously-polled="false" table-no="2" time-type="14">
+              <tdf-buffer>5765617468657200000335400e00000000000000000000012c000000008957696e6453706565645f6d735f5756630000575663000057566300000000010000000300000003000000008957696e6453706565645f6d735f4d617800004d617800004d6178000000000100000001000000008e57696e6453706565645f6d735f544d780000544d780000544d78000000000100000001000000008957696e6453706565645f6d735f53746400005374640000537464000000000100000001000000008954656d70657261747572655f435f41766700004176670000417667000000000100000001000000008954656d70657261747572655f435f53746400005374640000537464000000000100000001000000008952656c48756d69646974795f7063745f41766700004176670000417667000000000100000001000000008952656c48756d69646974795f7063745f53746400005374640000537464000000000100000001000000008950726573737572655f6850615f41766700004176670000417667000000000100000001000000008950726573737572655f6850615f5374640000537464000053746400000000010000000100000000895261696e546970730000536d700000536d7000000000010000000100000000895261696e66616c6c5f6d6d0000536d700000536d7000000000010000000100000000894c6f6767657254656d705f435f41766700004176670000417667000000000100000001000000008942617474560000536d700000536d70000000000100000001000000008957696e64537461747573436f64650000536d700000536d700000000001000000010000000089537461747573436f64650000536d700000536d700000000001000000010000000000</tdf-buffer>
+            </class-bmp5-tablecollectarea>
+            <class-table-area holes-lost-retro="false" newest-record-no="9713" stamp="1156677900000000000" was-reset="false">
+              <records-pending />
+              <records-collected>
+                <range begin="0" end="9713" />
+              </records-collected>
+            </class-table-area>
+            <settings>
+              <setting id="1">
+                <name val="Weather" />
+              </setting>
+              <setting id="2">1</setting>
+              <setting id="15">1</setting>
+              <setting id="16">3</setting>
+              <setting id="17">C:\Campbellsci\PC400\A-08-RM_Weather.csv</setting>
+              <setting id="18">10</setting>
+              <setting id="20">3</setting>
+              <setting id="21">C:\Campbellsci\PC400\A-08-RM_Weather.csv</setting>
+              <setting id="22">1</setting>
+              <setting id="24">1</setting>
+              <setting id="25">1</setting>
+              <setting id="26">1</setting>
+              <setting id="27">1</setting>
+              <setting id="28">3</setting>
+              <setting id="29">2</setting>
+              <setting id="30">6619599</setting>
+              <setting id="31">3</setting>
+              <setting id="32">3</setting>
+              <setting id="33">3</setting>
+              <setting id="34">3</setting>
+              <setting id="36">C:\Campbellsci\PC400\A-08-RM_Weather.csv</setting>
+              <setting id="37">86400000</setting>
+            </settings>
+          </collect-area>
+        </collect-areas>
+      </class-logger>
+      <class-dev error-rate="0">
+        <settings>
+          <setting base="0" enabled="false" id="1" interval="86400000" max-dev="10000" />
+          <setting id="2">0</setting>
+          <setting id="3">998</setting>
+          <setting id="4">0</setting>
+          <setting base="1990-01-01T00:00:00" id="5" interval="300000" is-on="false" prim-retry-interval="120000" prim-retry-max_count="3" sec-retry-interval="86400000" />
+          <setting id="6">12345</setting>
+          <setting id="10">0</setting>
+          <setting id="13" program-name="CPU:rmy93500_sdi12.CRB" resp-code="0" results="CPU:rmy93500_sdi12.CRB -- Compiled OK.&#13;&#10;" when="2026-08-27T11:21:20.000501" />
+          <setting id="20">0</setting>
+          <setting id="21">2</setting>
+          <setting id="22">1</setting>
+          <setting id="28">1</setting>
+          <setting id="34">2</setting>
+          <setting id="55">1</setting>
+          <setting id="56">1</setting>
+          <setting id="57">1</setting>
+          <setting id="60">10</setting>
+          <setting id="67">1</setting>
+          <setting id="68">0</setting>
+          <setting id="70">115200</setting>
+          <setting id="78">2</setting>
+          <setting id="80">1</setting>
+          <setting id="83">0</setting>
+          <setting id="86">PakBusPort</setting>
+          <setting id="89">CPU:rmy93500_sdi12.CRB</setting>
+          <setting id="90" />
+          <setting id="91">10485760</setting>
+          <setting id="92">0</setting>
+          <setting id="111">1</setting>
+          <setting id="112">0</setting>
+          <setting id="113">3600000</setting>
+          <setting id="114" />
+          <setting id="117">0</setting>
+          <setting id="118">0</setting>
+          <setting id="126">1</setting>
+          <setting id="129">0</setting>
+          <setting id="130" />
+          <setting id="133" />
+          <setting id="135">{}</setting>
+          <setting id="139">1</setting>
+          <setting id="148">1</setting>
+        </settings>
+      </class-dev>
+    </device>
+  </devices>
+  <replication />
+</lgrnet-config>
