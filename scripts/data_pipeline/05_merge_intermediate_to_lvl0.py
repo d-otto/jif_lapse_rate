@@ -15,6 +15,7 @@ files based on subdirectory structure. This script:
 Created: 2025-10-03
 """
 
+import argparse
 import numpy as np
 import xarray as xr
 from pathlib import Path
@@ -22,6 +23,7 @@ from tqdm import tqdm
 
 from jiflr import ROOT
 from jiflr.logging import item, key_value, setup_pipeline_logging, subheader
+from jiflr.pipeline import ensure_season_year_coordinate
 from jiflr.qc_plots import create_all_qc_plots
 
 
@@ -144,7 +146,7 @@ def tree_merge_datasets(datasets):
     return tree_merge_datasets(next_level)
 
 
-def process_directory(input_dir, output_file, logger):
+def process_directory(input_dir, output_file, year, logger):
     """
     Process all NetCDF files in a directory and merge them into a single file.
 
@@ -154,6 +156,8 @@ def process_directory(input_dir, output_file, logger):
         Input directory containing site NetCDF files
     output_file : Path
         Output file path for merged dataset
+    year : int
+        Field season represented by every input file in this directory.
     logger : logging.Logger
         Logger instance
     """
@@ -175,6 +179,7 @@ def process_directory(input_dir, output_file, logger):
     for nc_file in tqdm(nc_files, desc="Loading datasets"):
         try:
             ds = xr.open_dataset(nc_file)
+            ds = ensure_season_year_coordinate(ds, year, source_name=str(nc_file))
             datasets.append(ds)
 
             # Extract site name from filename or dataset attributes
@@ -224,7 +229,7 @@ def process_directory(input_dir, output_file, logger):
         'n_sites': len(datasets),
         'n_sensors': len(merged_ds.sensor_idx) if 'sensor_idx' in merged_ds.dims else 0,
         'site_names': ', '.join(site_names),
-        'structure': 'sensor_idx x datetime'
+        'structure': 'sensor_idx x datetime_utc'
     })
 
     # Ensure output directory exists
@@ -245,8 +250,7 @@ def process_directory(input_dir, output_file, logger):
     # Print summary
     n_sites = len(site_names)
     n_sensors = len(merged_ds.sensor_idx) if 'sensor_idx' in merged_ds.dims else 0
-    datetime_coord = 'datetime' if 'datetime' in merged_ds.dims else 'datetime_utc'
-    n_times = len(merged_ds[datetime_coord]) if datetime_coord in merged_ds.dims else 0
+    n_times = len(merged_ds["datetime_utc"])
     logger.info(f"Successfully merged {n_sites} sites ({n_sensors} sensors) -> {n_times} time points")
 
     # Close datasets to free memory
@@ -257,12 +261,16 @@ def process_directory(input_dir, output_file, logger):
 
 def main():
     """Main function to merge site data to lvl0."""
+    parser = argparse.ArgumentParser(description="Merge site data to level 0 for one field season")
+    parser.add_argument("--year", required=True, type=int, help="Field season to process")
+    args = parser.parse_args()
+    year = args.year
     # Set up logging (appends to pipeline log if running as part of pipeline)
-    logger = setup_pipeline_logging(step_number=5, total_steps=6, mode="a")
+    logger = setup_pipeline_logging(step_number=5, total_steps=7, mode="a")
 
     # Define paths
-    base_dir = Path(ROOT) / "data" / "2025" / "intermediate" / "pendants" / "by_site"
-    output_dir = Path(ROOT) / "data" / "2025" / "processed" / "lvl0"
+    base_dir = Path(ROOT) / "data" / str(year) / "intermediate" / "pendants" / "by_site"
+    output_dir = Path(ROOT) / "data" / str(year) / "processed" / "lvl0"
 
     logger.info(key_value("Input base directory", str(base_dir)))
     logger.info(key_value("Output directory", str(output_dir)))
@@ -274,11 +282,10 @@ def main():
 
     # Process main/root directory (on-ice standard sites)
     main_output = output_dir / "lvl0_on_ice.nc"
-    process_directory(base_dir, main_output, logger)
+    process_directory(base_dir, main_output, year, logger)
 
     # Output name mapping for subdirectories
     OUTPUT_NAME_MAP = {
-        "intensive": "on_ice_intensive",
         "off_ice": "off_ice",
         # camp_wx stays as-is (no mapping needed)
     }
@@ -287,18 +294,25 @@ def main():
     subdirs = [d for d in base_dir.iterdir() if d.is_dir()]
 
     if subdirs:
-        logger.info(f"Found {len(subdirs)} subdirectories to process:")
+        logger.info(f"Found {len(subdirs)} subdirectories:")
         for subdir in sorted(subdirs):
             logger.info(item(subdir.name))
+            if subdir.name == "on_ice_intensive":
+                logger.info(
+                    "  Skipped in step 05: step 04 creates the combined Pace and pendant "
+                    "Level 0 dataset."
+                )
 
         for subdir in sorted(subdirs):
+            if subdir.name == "on_ice_intensive":
+                continue
             # Check if subdirectory contains any NetCDF files
             nc_files = [f for f in subdir.glob("*.nc") if not f.name.startswith('.')]
 
             if nc_files:
                 output_name = OUTPUT_NAME_MAP.get(subdir.name, subdir.name)
                 subdir_output = output_dir / f"lvl0_{output_name}.nc"
-                process_directory(subdir, subdir_output, logger)
+                process_directory(subdir, subdir_output, year, logger)
             else:
                 logger.info(f"Skipping {subdir.name} subdirectory (no NetCDF files found)")
     else:

@@ -7,6 +7,7 @@ parsing the complex file format and converting them to standardized NetCDF files
 with CF-compliant metadata.
 """
 
+import argparse
 import sys
 import traceback
 
@@ -17,13 +18,17 @@ from jiflr.pipeline import clean_pace_loggers
 
 def main():
     """Process all raw Pace logger files."""
+    parser = argparse.ArgumentParser(description="Clean Pace logger data for one field season")
+    parser.add_argument("--year", required=True, type=int, help="Field season to process")
+    args = parser.parse_args()
+    year = args.year
     # Set up logging (appends to pipeline log if running as part of pipeline)
-    logger = setup_pipeline_logging(step_number=1, total_steps=6, mode="a")
+    logger = setup_pipeline_logging(step_number=1, total_steps=7, mode="a")
 
     # Define paths using ROOT from jiflr
-    raw_data_dir = ROOT / "data" / "2025" / "raw" / "pace"
-    output_dir = ROOT / "data" / "2025" / "intermediate" / "pace"
-    deployment_metadata_path = ROOT / "data" / "2025" / "metadata" / "deployment_periods.csv"
+    raw_data_dir = ROOT / "data" / str(year) / "raw" / "pace"
+    output_dir = ROOT / "data" / str(year) / "intermediate" / "pace"
+    deployment_metadata_path = ROOT / "data" / str(year) / "metadata" / "deployment_periods.csv"
 
     logger.info(key_value("Input directory", str(raw_data_dir)))
     logger.info(key_value("Output directory", str(output_dir)))
@@ -53,6 +58,7 @@ def main():
             output_dir,
             convert_to_local_tz=False,
             deployment_metadata_path=deployment_metadata_path,
+            year=year,
         )
 
         logger.info(subheader("Output files"))

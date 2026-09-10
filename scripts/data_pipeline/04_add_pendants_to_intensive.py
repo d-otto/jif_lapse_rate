@@ -10,7 +10,7 @@ pace meteorological data (unshielded) and pendant temperature/light data
 The resulting combined dataset goes in processed/lvl0/ with coordinates:
 - height: Combined heights from both data sources
 - shielded: Two levels ["shielded", "unshielded"]
-- datetime: Common time grid
+- datetime_utc: Common UTC time grid
 - site_id: Combined site names
 
 Only temperature data has the 'shielded' dimension. Other variables (wind,
@@ -19,6 +19,7 @@ pressure, etc.) from pace data are 3D without shielding dimension.
 Created: 2025-10-09
 """
 
+import argparse
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -26,7 +27,6 @@ from pathlib import Path
 from typing import Dict, List
 
 from jiflr import ROOT
-from jiflr.data import replace_utc_datetime_coord
 from jiflr.logging import indent, key_value, setup_pipeline_logging, subheader
 from jiflr.utils import get_deployment_periods, apply_deployment_mask
 
@@ -35,6 +35,7 @@ def load_pace_data(
     pace_dir: Path,
     logger,
     csv_deployment_path: Path = None,
+    year: int = None,
 ) -> Dict[str, xr.Dataset]:
     """
     Load all pace data files from the intermediate/pace directory.
@@ -85,32 +86,38 @@ def load_pace_data(
                     # Case: EM54053_Divide_20250619... -> "Divide"
                     site_name = filename_parts[1]  # Just "Divide"
 
-            # Skip if we already have this site (handle duplicates)
+            # A second source file for one site/year is ambiguous. Do not discard it.
             if site_name in pace_data:
-                logger.warning(
-                    f"Duplicate pace data for site {site_name}, skipping {pace_file.name}"
+                raise ValueError(
+                    f"Duplicate Pace data for site {site_name} in year {year}: {pace_file.name}"
                 )
                 continue
 
-            # Apply deployment masking (analogous to pendant masking in step 03)
+            # Apply deployment masking on the canonical UTC coordinate.
             if csv_deployment_path and csv_deployment_path.exists():
                 # Get site_id from the first sensor (all sensors in file share same site)
                 site_id = str(ds.site_id.values[0]) if 'site_id' in ds.coords else site_name
 
                 # Get datetime coordinate and data start time
-                datetime_coord_name = 'datetime_utc' if 'datetime_utc' in ds.coords else 'datetime'
-                data_start_time = pd.Timestamp(ds[datetime_coord_name].values[0])
+                if "datetime_utc" not in ds.coords:
+                    raise ValueError(
+                        f"Pace file {pace_file} does not have a datetime_utc coordinate"
+                    )
+                data_start_time = pd.Timestamp(ds["datetime_utc"].values[0])
 
                 # Check for deployment periods (use default_start so missing deploy_date falls back gracefully)
                 periods_dict = get_deployment_periods(
                     site_id,
                     csv_deployment_path,
+                    year,
                     default_start=data_start_time,
                     logger=logger,
                 )
 
                 if periods_dict.get(site_id):
-                    ds = apply_deployment_mask(ds, site_id, csv_deployment_path, ignore_missing=True)
+                    ds = apply_deployment_mask(
+                        ds, site_id, csv_deployment_path, year, ignore_missing=True
+                    )
                     logger.info(indent(f"Applied deployment masking for site: {site_id}", level=2))
                 else:
                     logger.warning(f"No deployment periods found for PACE site: {site_id}")
@@ -152,6 +159,10 @@ def load_pendant_data(pendant_dir: Path, logger) -> Dict[str, xr.Dataset]:
     for pendant_file in pendant_files:
         try:
             ds = xr.open_dataset(pendant_file)
+            if "datetime_utc" not in ds.coords:
+                raise ValueError(
+                    f"Pendant file {pendant_file} does not have a datetime_utc coordinate"
+                )
 
             # Extract site name from global attributes or filename
             if "site_name" in ds.attrs:
@@ -174,63 +185,6 @@ def load_pendant_data(pendant_dir: Path, logger) -> Dict[str, xr.Dataset]:
 
 
 # TODO: Move this section to the prior pace processing step
-def convert_pace_datetime_coords(
-    pace_data: Dict[str, xr.Dataset],
-    logger,
-) -> Dict[str, xr.Dataset]:
-    """
-    Convert pace data datetime coordinates from UTC to local time and rename.
-
-    This function will eventually be moved to the pace data processing script.
-    For now, it's included here for testing purposes.
-
-    This bundles together the time shifting (-9 UTC) and coordinate renaming
-    (datetime_utc -> datetime) steps.
-
-    Parameters
-    ----------
-    pace_data : Dict[str, xr.Dataset]
-        Dictionary of pace datasets with datetime_utc coordinates
-    logger : logging.Logger
-        Logger instance
-
-    Returns
-    -------
-    Dict[str, xr.Dataset]
-        Dictionary of pace datasets with datetime coordinates in local time
-    """
-    logger.info("TODO: Converting pace datetime coordinates (will be moved to prior step)")
-
-    converted_data = {}
-
-    for site_name, ds in pace_data.items():
-        try:
-            if "datetime_utc" in ds.coords:
-                # Bundle time shifting and coordinate renaming together
-                # Convert UTC to local time (-9 hours) and rename coordinate from datetime_utc to datetime
-                ds_converted = replace_utc_datetime_coord(
-                    ds,
-                    utc_offset_hours=-9.0,
-                    new_coord_name="datetime",
-                    old_coord_name="datetime_utc",
-                    add_cf_attributes=True,
-                )
-                converted_data[site_name] = ds_converted
-                logger.info(
-                    indent(f"Converted datetime_utc -> datetime with -9hr offset for site: {site_name}")
-                )
-            else:
-                # Already has datetime coordinate
-                converted_data[site_name] = ds
-                logger.info(indent(f"Site {site_name} already has datetime coordinate"))
-
-        except Exception as e:
-            logger.warning(f"Failed to convert datetime for {site_name}: {e}")
-            converted_data[site_name] = ds  # Use original if conversion fails
-
-    return converted_data
-
-
 def standardize_height_formats(heights: List) -> List[str]:
     """
     Standardize height values to consistent string format (e.g., "0.5m", "1m", "2m").
@@ -338,17 +292,15 @@ def create_common_datetime_grid(
     """
     all_times = []
 
-    # Collect all datetime values from pace data
+    # Collect all UTC datetime values from Pace data
     for ds in pace_data.values():
-        if "datetime" in ds.coords:
-            times = pd.to_datetime(ds.datetime.values)
-            all_times.extend(times)
+        times = pd.to_datetime(ds.datetime_utc.values)
+        all_times.extend(times)
 
-    # Collect all datetime values from pendant data
+    # Collect all UTC datetime values from pendant data
     for ds in pendant_data.values():
-        if "datetime" in ds.coords:
-            times = pd.to_datetime(ds.datetime.values)
-            all_times.extend(times)
+        times = pd.to_datetime(ds.datetime_utc.values)
+        all_times.extend(times)
 
     if not all_times:
         raise ValueError("No datetime coordinates found in any dataset")
@@ -369,6 +321,7 @@ def combine_datasets(
     pendant_data: Dict[str, xr.Dataset],
     common_datetime: pd.DatetimeIndex,
     site_mapping: Dict[str, str],
+    year: int,
     logger,
 ) -> xr.Dataset:
     """
@@ -409,8 +362,9 @@ def combine_datasets(
             new_site_ids = [standard_site if site == pace_site else site for site in ds.site_id.values]
             ds = ds.assign_coords(site_id=('sensor_idx', new_site_ids))
 
+
         # Reindex to common datetime grid
-        datetime_coord = "datetime" if "datetime" in ds.coords else "datetime_utc"
+        datetime_coord = "datetime_utc"
         ds_rounded = ds.assign_coords({datetime_coord: ds[datetime_coord].dt.round("min")})
 
         # Remove duplicate times (keep first occurrence)
@@ -425,7 +379,7 @@ def combine_datasets(
     # Add pendant datasets
     for pendant_site, ds in pendant_data.items():
         # Reindex to common datetime grid
-        datetime_coord = "datetime" if "datetime" in ds.coords else "datetime_utc"
+        datetime_coord = "datetime_utc"
         ds_rounded = ds.assign_coords({datetime_coord: ds[datetime_coord].dt.round("min")})
 
         # Remove duplicate times (keep first occurrence)
@@ -471,7 +425,7 @@ def combine_datasets(
             "source": "Combined from pace and pendant sensor data",
             "processing_step": "lvl0_combined_sensor_idx",
             "institution": "JIFLR Project",
-            "structure": "sensor_idx x datetime",
+            "structure": "sensor_idx x datetime_utc",
             "n_sensors": n_sensors,
             "n_sites": len(unique_sites),
             "site_names": ", ".join(unique_sites),
@@ -486,15 +440,19 @@ def combine_datasets(
 
 def main():
     """Main function to combine pace and pendant data."""
+    parser = argparse.ArgumentParser(description="Combine intensive Pace and pendant data")
+    parser.add_argument("--year", required=True, type=int, help="Field season to process")
+    args = parser.parse_args()
+    year = args.year
     # Set up logging (appends to pipeline log if running as part of pipeline)
-    logger = setup_pipeline_logging(step_number=4, total_steps=6, mode="a")
+    logger = setup_pipeline_logging(step_number=4, total_steps=7, mode="a")
 
     # Define paths
-    base_dir = Path(ROOT) / "data" / "2025"
+    base_dir = Path(ROOT) / "data" / str(year)
     pace_dir = base_dir / "intermediate" / "pace"
-    pendant_dir = base_dir / "intermediate" / "pendants" / "by_site" / "intensive"
+    pendant_dir = base_dir / "intermediate" / "pendants" / "by_site" / "on_ice_intensive"
     output_dir = base_dir / "processed" / "lvl0"
-    csv_deployment_path = Path(ROOT) / "data" / "2025" / "metadata" / "deployment_periods.csv"
+    csv_deployment_path = base_dir / "metadata" / "deployment_periods.csv"
 
     logger.info(key_value("Pace data directory", str(pace_dir)))
     logger.info(key_value("Pendant data directory", str(pendant_dir)))
@@ -506,7 +464,7 @@ def main():
 
     # Load data
     logger.info(subheader("1. Loading pace data"))
-    pace_data = load_pace_data(pace_dir, logger, csv_deployment_path)
+    pace_data = load_pace_data(pace_dir, logger, csv_deployment_path, year)
 
     logger.info(subheader("2. Loading pendant data"))
     pendant_data = load_pendant_data(pendant_dir, logger)
@@ -515,31 +473,26 @@ def main():
         logger.error("No data found in either pace or pendant directories")
         return
 
-    # Convert pace datetime coordinates (TODO: move to prior step)
-    if pace_data:
-        logger.info(subheader("3. Converting pace datetime coordinates"))
-        pace_data = convert_pace_datetime_coords(pace_data, logger)
-
     # Create site name mapping
-    logger.info(subheader("4. Creating site name mapping"))
+    logger.info(subheader("3. Creating site name mapping"))
     pace_sites = list(pace_data.keys())
     pendant_sites = list(pendant_data.keys())
     site_mapping = map_site_names(pace_sites, pendant_sites)
     logger.info(f"Site mapping: {site_mapping}")
 
     # Create common datetime grid
-    logger.info(subheader("5. Creating common datetime grid"))
+    logger.info(subheader("4. Creating common UTC datetime grid"))
     common_datetime = create_common_datetime_grid(pace_data, pendant_data, logger)
 
     # Combine datasets
-    logger.info(subheader("6. Combining datasets"))
+    logger.info(subheader("5. Combining datasets"))
     combined_ds = combine_datasets(
-        pace_data, pendant_data, common_datetime, site_mapping, logger
+        pace_data, pendant_data, common_datetime, site_mapping, year, logger
     )
 
     # Save combined dataset
     output_file = output_dir / "lvl0_intensive.nc"
-    logger.info(subheader("7. Saving combined dataset"))
+    logger.info(subheader("6. Saving combined dataset"))
     logger.info(key_value("Output file", str(output_file)))
     combined_ds.to_netcdf(output_file)
 
@@ -560,14 +513,14 @@ def main():
     logger.info(key_value("Unique shielding levels", str(unique_shielding)))
     logger.info(key_value("Unique sensor types", str(unique_sensor_types)))
 
-    datetime_coord = "datetime" if "datetime" in combined_ds.coords else "datetime_utc"
+    datetime_coord = "datetime_utc"
     logger.info(
         key_value("Time range", f"{combined_ds[datetime_coord].values[0]} to {combined_ds[datetime_coord].values[-1]}")
     )
 
     logger.info("Data structure uses sensor_idx with sensor attributes as coordinates")
     logger.info(indent("- Each sensor has site_id, height, shielding, sensor_type attributes"))
-    logger.info(indent("- Data dimensions: (sensor_idx, datetime)"))
+    logger.info(indent("- Data dimensions: (sensor_idx, datetime_utc)"))
     logger.info(indent("- Use ds.where() or groupby operations for analysis"))
 
 

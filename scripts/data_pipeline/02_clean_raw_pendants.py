@@ -13,6 +13,7 @@ This script:
 Created: 2025-10-01
 """
 
+import argparse
 from pathlib import Path
 from typing import Union
 
@@ -26,8 +27,6 @@ def main(
     output_base_dir: Union[str, Path],
     year: str = "2025",
     force: bool = False,
-    convert_to_local_tz: bool = True,
-    utc_offset_hours: float = -9.0,
     data_inventory_path: Union[str, Path, None] = None,
     deployment_metadata_path: Union[str, Path, None] = None,
 ) -> None:
@@ -51,10 +50,6 @@ def main(
     force : bool, optional
         If True, reprocess all files even if outputs already exist. Currently not
         implemented but reserved for future use (default: False).
-    convert_to_local_tz : bool, optional
-        If True, convert from UTC storage to local timezone (default: True).
-    utc_offset_hours : float, optional
-        UTC offset in hours for local timezone conversion (default: -9.0 for AKST).
     data_inventory_path : Union[str, Path, None], optional
         Path to data inventory Excel file containing shielding information (default: None).
     deployment_metadata_path : Union[str, Path, None], optional
@@ -72,7 +67,7 @@ def main(
     'output_base_dir/site2/' respectively.
     """
     # Set up logging (appends to pipeline log if running as part of pipeline)
-    logger = setup_pipeline_logging(step_number=2, total_steps=6, mode="a")
+    logger = setup_pipeline_logging(step_number=2, total_steps=7, mode="a")
 
     # Convert paths to Path objects
     raw_dir = Path(raw_dir)
@@ -122,32 +117,24 @@ def main(
 
         total_csv_files += len(csv_files)
 
-        # Process CSV files for this subdirectory with optional timezone conversion
-        if convert_to_local_tz:
-            logger.info(f"Converting to local timezone (UTC{utc_offset_hours:+.1f})")
+        logger.info("Retaining UTC timestamps")
 
         clean_hobo_pendants(
             csv_files,
             output_dir,
-            convert_to_local_tz=convert_to_local_tz,
-            utc_offset_hours=utc_offset_hours,
             data_inventory_path=data_inventory_path,
             deployment_metadata_path=deployment_metadata_path,
+            year=int(year),
         )
 
         # Count output files
         nc_files = sorted(output_dir.glob("*.nc"))
-        tz_info = (
-            f" with timezone UTC{utc_offset_hours:+.1f}"
-            if convert_to_local_tz
-            else " in UTC"
-        )
         output_location = (
             output_dir.relative_to(output_base_dir)
             if rel_path != Path(".")
             else "root"
         )
-        logger.info(f"Created {len(nc_files)} NetCDF files{tz_info} in {output_location}")
+        logger.info(f"Created {len(nc_files)} NetCDF files in UTC in {output_location}")
 
         total_processed += len(nc_files)
 
@@ -164,22 +151,25 @@ def main(
 
 
 if __name__ == "__main__":
-    year = "2025"
+    parser = argparse.ArgumentParser(description="Clean pendant data for one field season")
+    parser.add_argument("--year", required=True, type=int, help="Field season to process")
+    args = parser.parse_args()
+    year = args.year
 
     # Define paths
-    raw_dir = Path(ROOT) / "data" / year / "raw" / "pendants" / "exported"
+    raw_dir = Path(ROOT) / "data" / str(year) / "raw" / "pendants" / "exported"
     output_base_dir = (
-        Path(ROOT) / "data" / year / "intermediate" / "pendants" / "by_sensor"
+        Path(ROOT) / "data" / str(year) / "intermediate" / "pendants" / "by_sensor"
     )
-    data_inventory_path = Path(ROOT) / "data" / year / "metadata" / "data_inventory.xlsx"
+    data_inventory_path = Path(ROOT) / "data" / str(year) / "metadata" / "data_inventory.xlsx"
     deployment_metadata_path = (
-        Path(ROOT) / "data" / year / "metadata" / "deployment_periods.csv"
+        Path(ROOT) / "data" / str(year) / "metadata" / "deployment_periods.csv"
     )
 
     main(
         raw_dir,
         output_base_dir,
-        year="2025",
+        year=str(year),
         force=True,
         data_inventory_path=data_inventory_path,
         deployment_metadata_path=deployment_metadata_path,

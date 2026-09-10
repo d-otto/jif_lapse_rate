@@ -19,7 +19,8 @@ import xarray as xr
 
 from jiflr import ROOT
 from jiflr.logging import indent, key_value, setup_pipeline_logging, subheader
-from jiflr.qc_plots import create_all_qc_plots
+from jiflr.pipeline import ensure_season_year_coordinate
+from jiflr.qc_plots import create_all_qc_plots, create_wind_masking_qc_plots
 
 
 def interpolate_to_5min(ds):
@@ -33,7 +34,7 @@ def interpolate_to_5min(ds):
     Parameters
     ----------
     ds : xarray.Dataset
-        Input dataset with datetime coordinate
+        Input dataset with a UTC datetime_utc coordinate
 
     Returns
     -------
@@ -43,7 +44,9 @@ def interpolate_to_5min(ds):
     # Resample to 5-minute intervals using mean aggregation
     # This preserves existing data points that fall on 5-minute boundaries
     # regardless of their minute offset from standard boundaries
-    ds_resampled = ds.resample(datetime="5min").mean()
+    if "datetime_utc" not in ds.coords:
+        raise ValueError("Level 0 dataset does not have a datetime_utc coordinate")
+    ds_resampled = ds.resample(datetime_utc="5min").mean()
 
     # Update processing step attribute
     attrs = ds.attrs.copy()
@@ -57,7 +60,7 @@ def interpolate_to_5min(ds):
     return ds_resampled
 
 
-def process_individual_file(input_path, output_dir, logger):
+def process_individual_file(input_path, output_dir, year, logger):
     """
     Process a single lvl0 file to lvl1.
 
@@ -67,6 +70,8 @@ def process_individual_file(input_path, output_dir, logger):
         Path to input lvl0 NetCDF file
     output_dir : Path
         Output directory for processed file
+    year : int
+        Field season represented by this input file.
     logger : logging.Logger
         Logger instance
 
@@ -79,11 +84,21 @@ def process_individual_file(input_path, output_dir, logger):
 
     # Load the dataset
     ds = xr.open_dataset(input_path)
+    ds = ensure_season_year_coordinate(ds, year, source_name=str(input_path))
 
     # Apply wind direction masking (before resampling)
     # Only call for datasets that have wind data
     if 'wind_direction' in ds.data_vars and 'wind_speed_avg' in ds.data_vars:
         from jiflr.pipeline import mask_wind_direction_by_speed
+        output_filename = input_path.name.replace("lvl0_", "lvl1_")
+        logger.info(indent("Creating wind masking QC plots...", level=2))
+        create_wind_masking_qc_plots(
+            ds=ds,
+            output_dir=output_dir,
+            filename_prefix=output_filename.removesuffix(".nc"),
+            wind_speed_threshold=0.5,
+            logger=logger,
+        )
         logger.info(indent("Applying wind direction masking based on wind speed...", level=2))
         ds = mask_wind_direction_by_speed(ds, wind_speed_threshold=0.5, logger=logger)
 
@@ -180,7 +195,7 @@ def combine_datasets(datasets, output_path, logger):
     attrs["processing_step"] = "lvl1_combined_sensor_idx"
     attrs["n_source_files"] = len(datasets)
     attrs["combined_timestamp"] = datetime.now().isoformat()
-    attrs["structure"] = "sensor_idx x datetime"
+    attrs["structure"] = "sensor_idx x datetime_utc"
 
     if "sensor_idx" in combined.dims:
         attrs["n_sensors"] = len(combined.sensor_idx)
@@ -197,27 +212,33 @@ def combine_datasets(datasets, output_path, logger):
 def main():
     """Main processing function."""
     # Set up logging (appends to pipeline log if running as part of pipeline)
-    logger = setup_pipeline_logging(step_number=6, total_steps=6, mode="a")
+    logger = setup_pipeline_logging(step_number=6, total_steps=7, mode="a")
 
     parser = argparse.ArgumentParser(description="Process JIFLR lvl0 data to lvl1")
     parser.add_argument(
+        "--year",
+        type=int,
+        required=True,
+        help="Field season to process",
+    )
+    parser.add_argument(
         "--input-dir",
         type=str,
-        default="data/2025/processed/lvl0",
+        default=None,
         help="Input directory containing lvl0 files",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="data/2025/processed/lvl1",
+        default=None,
         help="Output directory for lvl1 files",
     )
 
     args = parser.parse_args()
 
     # Set up paths
-    input_dir = ROOT / args.input_dir
-    output_dir = ROOT / args.output_dir
+    input_dir = ROOT / args.input_dir if args.input_dir else ROOT / "data" / str(args.year) / "processed" / "lvl0"
+    output_dir = ROOT / args.output_dir if args.output_dir else ROOT / "data" / str(args.year) / "processed" / "lvl1"
 
     # Create output directory if it doesn't exist
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -240,11 +261,10 @@ def main():
 
     for lvl0_file in lvl0_files:
         try:
-            ds_lvl1 = process_individual_file(lvl0_file, output_dir, logger)
+            ds_lvl1 = process_individual_file(lvl0_file, output_dir, args.year, logger)
             processed_datasets.append(ds_lvl1)
         except Exception as e:
-            logger.error(f"Error processing {lvl0_file.name}: {e}")
-            continue
+            raise RuntimeError(f"Error processing {lvl0_file.name}: {e}") from e
 
     # Close all datasets
     for ds in processed_datasets:

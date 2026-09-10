@@ -10,6 +10,7 @@ Project: jif_lapse_rate
 """
 
 import logging
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
@@ -24,6 +25,90 @@ from jiflr import ROOT
 
 # Module-level logger for pipeline operations
 _logger = logging.getLogger("jiflr.pipeline")
+
+
+@dataclass(frozen=True)
+class MetadataPaths:
+    """Metadata locations for one field season."""
+
+    year: int
+    data_root: Path = ROOT / "data"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.year, int) or not 1900 <= self.year <= 2100:
+            raise ValueError(f"year must be an integer between 1900 and 2100; got {self.year!r}")
+
+    @property
+    def directory(self) -> Path:
+        return self.data_root / str(self.year) / "metadata"
+
+    @property
+    def deployment_periods(self) -> Path:
+        return self.directory / "deployment_periods.csv"
+
+    @property
+    def data_inventory(self) -> Path:
+        return self.directory / "data_inventory.xlsx"
+
+
+def read_season_metadata(path: Path, year: int, *, source_name: str) -> pd.DataFrame:
+    """Read metadata and return validated, nonblank records for one field season."""
+    if not path.exists():
+        raise FileNotFoundError(f"{source_name} metadata does not exist: {path}")
+    frame = pd.read_excel(path) if path.suffix.lower() in {".xlsx", ".xls"} else pd.read_csv(path)
+    frame = frame.dropna(how="all").copy()
+    if "year" not in frame.columns:
+        raise ValueError(f"{source_name} metadata must contain a 'year' column: {path}")
+    parsed_year = pd.to_numeric(frame["year"], errors="coerce")
+    if parsed_year.isna().any() or (parsed_year % 1 != 0).any():
+        bad_rows = frame.index[parsed_year.isna() | (parsed_year % 1 != 0)].tolist()
+        raise ValueError(
+            f"{source_name} metadata has missing or non-integral year values in rows {bad_rows}: {path}"
+        )
+    frame["year"] = parsed_year.astype(int)
+    season_frame = frame.loc[frame["year"] == year].copy()
+    if season_frame.empty:
+        raise ValueError(f"{source_name} metadata contains no records for year {year}: {path}")
+    return season_frame
+
+
+def ensure_season_year_coordinate(
+    ds: xr.Dataset, year: int, *, source_name: str
+) -> xr.Dataset:
+    """Attach a requested season to legacy data and reject conflicting metadata."""
+    if "sensor_idx" not in ds.dims:
+        raise ValueError(f"{source_name} does not have a sensor_idx dimension")
+    if "year" not in ds.coords:
+        return ds.assign_coords(
+            year=("sensor_idx", np.full(ds.sizes["sensor_idx"], year, dtype=int))
+        )
+    if ds["year"].dims != ("sensor_idx",):
+        raise ValueError(
+            f"{source_name} has a year coordinate that is not indexed by sensor_idx"
+        )
+    observed_years = set(ds["year"].values.tolist())
+    if observed_years != {year}:
+        raise ValueError(
+            f"{source_name} contains year values {sorted(observed_years)}; "
+            f"expected only {year}"
+        )
+    return ds
+
+
+# Mapping: processing year -> normalized observed site ID -> canonical site ID.
+# The entries are fictional and exist only to test the synthetic 2026 season.
+# Add verified field mappings before building a real cross-season data product.
+SITE_ASSOCIATIONS: dict[int, dict[str, str]] = {
+    2026: {"a26": "A01", "ridge2026": "Lee1"},
+}
+
+
+def canonical_site_id(site_id: str, year: int) -> str:
+    """Return the stable site identity for an observed seasonal site ID."""
+    observed = str(site_id).strip()
+    if not observed:
+        raise ValueError("site_id cannot be empty when resolving a canonical site")
+    return SITE_ASSOCIATIONS.get(year, {}).get(observed.casefold(), observed)
 
 
 def standardize_height(height: str) -> str:
@@ -264,7 +349,7 @@ def replace_utc_datetime_coord(
     return ds_new
 
 
-def load_deployment_metadata(csv_path: Path) -> Dict[str, Dict[str, float]]:
+def load_deployment_metadata(csv_path: Path, year: int) -> Dict[str, Dict[str, float]]:
     """
     Load deployment metadata (elevations, coordinates) from deployment CSV.
 
@@ -290,7 +375,7 @@ def load_deployment_metadata(csv_path: Path) -> Dict[str, Dict[str, float]]:
         return metadata
 
     try:
-        df = pd.read_csv(csv_path)
+        df = read_season_metadata(csv_path, year, source_name="deployment periods")
 
         for _, row in df.iterrows():
             site = row.get("site")
@@ -309,7 +394,7 @@ def load_deployment_metadata(csv_path: Path) -> Dict[str, Dict[str, float]]:
 
 
 def _populate_spatial_metadata(
-    ds: "xr.Dataset", deployment_metadata_path: Path
+    ds: "xr.Dataset", deployment_metadata_path: Path, year: int
 ) -> "xr.Dataset":
     """
     Populate elevation, latitude, and longitude coordinates from deployment metadata.
@@ -327,7 +412,7 @@ def _populate_spatial_metadata(
         Dataset with populated spatial coordinates
     """
     # Load deployment metadata
-    metadata = load_deployment_metadata(deployment_metadata_path)
+    metadata = load_deployment_metadata(deployment_metadata_path, year)
 
     if not metadata or not metadata.get("elevations"):
         _logger.warning(f"No elevation data found in {deployment_metadata_path}")
@@ -391,10 +476,9 @@ def _populate_spatial_metadata(
 def clean_hobo_pendants(
     ps: list[Path] | Path,
     dir_out: Path,
-    convert_to_local_tz: bool = False,
-    utc_offset_hours: float = -9.0,
     data_inventory_path: Optional[Path] = None,
     deployment_metadata_path: Optional[Path] = None,
+    year: Optional[int] = None,
 ):
     """
     Reads data exported from HOBOware and HOBOconnect and outputs it as netcdf.
@@ -405,15 +489,14 @@ def clean_hobo_pendants(
         Path or list of paths to CSV files exported from HOBOware/HOBOconnect
     dir_out : Path
         Output directory for NetCDF files
-    convert_to_local_tz : bool, optional
-        If True, convert from UTC storage to local timezone (default: False)
-    utc_offset_hours : float, optional
-        UTC offset in hours for local timezone conversion (default: -9.0 for AKST)
     data_inventory_path : Path, optional
         Path to data inventory Excel file containing shielding information
     deployment_metadata_path : Path, optional
         Path to deployment_periods.csv file containing site elevations, coordinates
     """
+
+    if year is None:
+        raise ValueError("year is required when cleaning pendant data")
 
     # make sure ps is always a list
     if isinstance(ps, list) is False:
@@ -423,7 +506,9 @@ def clean_hobo_pendants(
     sensor_metadata = {}
     if data_inventory_path and data_inventory_path.exists():
         try:
-            inventory_df = pd.read_excel(data_inventory_path)
+            inventory_df = read_season_metadata(
+                data_inventory_path, year, source_name="data inventory"
+            )
 
             # Melt the inventory to make it tidy - each sensor gets its own row
             sn_columns = [col for col in inventory_df.columns if "SN" in col]
@@ -477,6 +562,14 @@ def clean_hobo_pendants(
                         "height": height,
                         "shielding": shielding,
                     }
+
+                duplicate_sensor_ids = melted["sensor_id"].duplicated(keep=False)
+                if duplicate_sensor_ids.any():
+                    duplicate_ids = sorted(melted.loc[duplicate_sensor_ids, "sensor_id"].unique())
+                    raise ValueError(
+                        f"Data inventory assigns sensor IDs more than once in year {year}: "
+                        f"{duplicate_ids}"
+                    )
 
         except Exception as e:
             warnings.warn(f"Could not load data inventory: {e}")
@@ -696,6 +789,7 @@ def clean_hobo_pendants(
                 # Sensor attributes as coordinates indexed by sensor_idx
                 "sensor_id": ("sensor_idx", [sn]),
                 "site_id": ("sensor_idx", [site_name if site_name else ""]),
+                "year": ("sensor_idx", [year]),
                 "height": (
                     "sensor_idx",
                     [
@@ -715,6 +809,14 @@ def clean_hobo_pendants(
                 "longitude": ("sensor_idx", [np.nan]),
             },
         )
+        ds["datetime_utc"].attrs.update(
+            {
+                "standard_name": "time",
+                "axis": "T",
+                "long_name": "UTC time",
+                "timezone": "UTC",
+            }
+        )
 
         # Add metadata
         attr_dict = {
@@ -727,6 +829,9 @@ def clean_hobo_pendants(
             "sensor_height": sensor_height if sensor_height else "",
             "sensor_config": sensor_config if sensor_config else "",
             "shielding": shielding_status,
+            "year": year,
+            "time_coordinate": "datetime_utc",
+            "time_coverage_timezone": "UTC",
             "structure": "sensor_idx × datetime",
         }
 
@@ -737,35 +842,13 @@ def clean_hobo_pendants(
         # Also add metadata to dataset attributes for easy access
         ds.attrs.update(attr_dict)
 
-        # Convert to local timezone if requested
-        if convert_to_local_tz:
-            ds = replace_utc_datetime_coord(
-                ds, utc_offset_hours=utc_offset_hours, add_cf_attributes=True
-            )
-            time_coord_name = "datetime"
-        else:
-            time_coord_name = "datetime_utc"
-
         # Output to netcdf
-        start_time = (
-            df_clean["datetime_utc"].iloc[0]
-            if not convert_to_local_tz
-            else ds[time_coord_name].values[0]
-        )
-        end_time = (
-            df_clean["datetime_utc"].iloc[-1]
-            if not convert_to_local_tz
-            else ds[time_coord_name].values[-1]
-        )
-
-        # Format filename timestamps consistently
-        if convert_to_local_tz:
-            start_time = pd.Timestamp(start_time)
-            end_time = pd.Timestamp(end_time)
+        start_time = df_clean["datetime_utc"].iloc[0]
+        end_time = df_clean["datetime_utc"].iloc[-1]
 
         # Populate spatial metadata if deployment metadata is provided
         if deployment_metadata_path and deployment_metadata_path.exists():
-            ds = _populate_spatial_metadata(ds, deployment_metadata_path)
+            ds = _populate_spatial_metadata(ds, deployment_metadata_path, year)
 
         fname = f"{sn}_{start_time.strftime('%Y%m%dT%H%M')}_{end_time.strftime('%Y%m%dT%H%M')}.nc"
         pout = dir_out / fname
@@ -780,6 +863,7 @@ def clean_pace_loggers(
     convert_to_local_tz: bool = False,
     utc_offset_hours: float = -9.0,
     deployment_metadata_path: Optional[Path] = None,
+    year: Optional[int] = None,
 ):
     """
     Parse Pace logger data files from intensive monitoring sites and convert to NetCDF.
@@ -817,6 +901,9 @@ def clean_pace_loggers(
     Variable names are CF-compliant with units stored as attributes.
     """
 
+    if year is None:
+        raise ValueError("year is required when cleaning Pace logger data")
+
     # Ensure file_paths is always a list
     if isinstance(file_paths, Path):
         file_paths = [file_paths]
@@ -828,7 +915,70 @@ def clean_pace_loggers(
             convert_to_local_tz,
             utc_offset_hours,
             deployment_metadata_path,
+            year,
         )
+
+
+def merge_lvl1_all_years(years: List[int], data_root: Path = ROOT / "data") -> List[Path]:
+    """Merge matching Level 1 products into all-years datasets.
+
+    Seasonal products retain observed ``site_id`` values. This is the first
+    point where ``canonical_site_id`` is added, preserving the provenance of a
+    renamed site while supplying a stable cross-season identity.
+    """
+    years = sorted(set(years))
+    if len(years) < 2:
+        raise ValueError("at least two distinct years are required for an all-years merge")
+
+    files_by_name: Dict[str, List[tuple[int, Path]]] = {}
+    for year in years:
+        lvl1_dir = data_root / str(year) / "processed" / "lvl1"
+        if not lvl1_dir.exists():
+            raise FileNotFoundError(f"Level 1 directory does not exist for {year}: {lvl1_dir}")
+        for path in lvl1_dir.glob("lvl1_*.nc"):
+            if path.name.endswith("_all_years.nc"):
+                continue
+            files_by_name.setdefault(path.name, []).append((year, path))
+
+    output_dir = data_root / "all_years" / "processed" / "lvl1"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_paths = []
+
+    for filename, season_paths in sorted(files_by_name.items()):
+        datasets = []
+        for year, path in sorted(season_paths):
+            opened = xr.open_dataset(path)
+            ds = opened.load()
+            opened.close()
+            if "year" not in ds.coords or ds["year"].dims != ("sensor_idx",):
+                raise ValueError(
+                    f"{path} has no sensor-indexed year coordinate; regenerate season {year} first"
+                )
+            if set(ds["year"].values.tolist()) != {year}:
+                raise ValueError(f"{path} contains records outside field season {year}")
+            canonical_ids = [canonical_site_id(site, year) for site in ds.site_id.values]
+            ds = ds.assign_coords(canonical_site_id=("sensor_idx", canonical_ids))
+            datasets.append(ds)
+
+        combined = xr.concat(datasets, dim="sensor_idx", data_vars="all", coords="all", join="outer")
+        combined = combined.assign_coords(sensor_idx=np.arange(combined.sizes["sensor_idx"]))
+        combined.attrs.update(
+            {
+                "processing_step": "lvl1_all_years_combined",
+                "source_years": ", ".join(
+                    str(year) for year, _ in sorted(season_paths)
+                ),
+                "structure": "sensor_idx x datetime",
+            }
+        )
+        category = filename.removeprefix("lvl1_").removesuffix(".nc")
+        output_path = output_dir / f"lvl1_{category}_all_years.nc"
+        combined.to_netcdf(output_path)
+        output_paths.append(output_path)
+
+    if not output_paths:
+        raise ValueError(f"No Level 1 datasets found for years {years}")
+    return output_paths
 
 
 def _parse_pace_header(lines: list[str]) -> dict:
@@ -1009,7 +1159,7 @@ def _clean_pace_column_names(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
 
 
 def _create_pace_dataset(
-    df: pd.DataFrame, metadata: dict, file_path: Path
+    df: pd.DataFrame, metadata: dict, file_path: Path, year: int
 ) -> xr.Dataset:
     """Create xarray dataset from parsed Pace logger data using sensor_idx structure."""
 
@@ -1136,6 +1286,7 @@ def _create_pace_dataset(
         "datetime_utc": df["datetime_utc"],
         # Sensor attributes as coordinates
         "site_id": ("sensor_idx", site_ids),
+        "year": ("sensor_idx", [year] * n_sensors),
         "height": ("sensor_idx", heights),
         "shielding": ("sensor_idx", shielding_types),
         "sensor_type": ("sensor_idx", sensor_types),
@@ -1148,12 +1299,22 @@ def _create_pace_dataset(
 
     # Create dataset
     ds = xr.Dataset(data_vars, coords=coords)
+    ds["datetime_utc"].attrs.update(
+        {
+            "standard_name": "time",
+            "axis": "T",
+            "long_name": "UTC time",
+            "timezone": "UTC",
+        }
+    )
 
     # Add CF-compliant attributes
     _add_pace_attributes(ds, metadata)
 
     # Add structure information
     ds.attrs["structure"] = "sensor_idx × datetime"
+    ds.attrs["time_coordinate"] = "datetime_utc"
+    ds.attrs["time_coverage_timezone"] = "UTC"
     ds.attrs["n_sensors"] = n_sensors
 
     return ds
@@ -1486,6 +1647,7 @@ def _process_single_pace_file(
     convert_to_local_tz: bool,
     utc_offset_hours: float,
     deployment_metadata_path: Optional[Path] = None,
+    year: Optional[int] = None,
 ):
     """Process a single Pace logger file and save as NetCDF."""
 
@@ -1501,9 +1663,37 @@ def _process_single_pace_file(
     df = _parse_pace_data(file_path, data_start_idx, metadata)
 
     # Create xarray dataset
-    ds = _create_pace_dataset(df, metadata, file_path)
+    if year is None:
+        raise ValueError("year is required when processing a Pace logger file")
+    ds = _create_pace_dataset(df, metadata, file_path, year)
 
-    # Convert timezone if requested
+    # Populate spatial metadata if deployment metadata is provided
+    if deployment_metadata_path and deployment_metadata_path.exists():
+        ds = _populate_spatial_metadata(ds, deployment_metadata_path, year)
+
+    # Apply wind-direction correction here. Deployment masking is intentionally
+    # deferred to step 04, after both Pace and pendant data use the same local
+    # datetime coordinate. Masking this UTC dataset here previously produced a
+    # one-timezone discrepancy with pendant data.
+    if deployment_metadata_path and deployment_metadata_path.exists():
+        from jiflr.utils import get_wind_dir_offsets
+
+        offsets = get_wind_dir_offsets(deployment_metadata_path, year)
+        if offsets:
+            _logger.info("Applying wind direction corrections...")
+            ds = apply_wind_direction_correction(ds, offsets, _logger)
+        else:
+            _logger.info("No wind direction offsets found in deployment metadata")
+
+    # Create an inspection plot while each logger's original channels are still
+    # separate. Later pipeline stages merge Pace and pendant sensors by site.
+    from jiflr.qc_plots import create_pace_qc_plot
+
+    site_name = file_path.stem
+    create_pace_qc_plot(ds, dir_out, filename_prefix=site_name, logger=_logger)
+
+    # Preserve the legacy local-time export option after plotting. QC plots
+    # consistently use the raw UTC timestamps used by the pipeline.
     if convert_to_local_tz:
         ds = replace_utc_datetime_coord(
             ds, utc_offset_hours=utc_offset_hours, add_cf_attributes=True
@@ -1512,61 +1702,8 @@ def _process_single_pace_file(
     else:
         time_coord_name = "datetime_utc"
 
-    # Populate spatial metadata if deployment metadata is provided
-    if deployment_metadata_path and deployment_metadata_path.exists():
-        ds = _populate_spatial_metadata(ds, deployment_metadata_path)
-
-    # Apply deployment period masking and wind direction correction from the same CSV
-    if deployment_metadata_path and deployment_metadata_path.exists():
-        from jiflr.utils import get_wind_dir_offsets
-
-        deploy_df = pd.read_csv(deployment_metadata_path)
-        times = pd.DatetimeIndex(ds[time_coord_name].values)
-
-        for idx in ds.sensor_idx.values:
-            site_id = str(ds.site_id.sel(sensor_idx=idx).values.item())
-            site_rows = deploy_df[deploy_df["site"].str.lower() == site_id.lower()]
-
-            if site_rows.empty:
-                _logger.warning(
-                    f"Site {site_id}: no deployment period found in metadata, skipping mask"
-                )
-                continue
-
-            row = site_rows.iloc[0]
-            deploy_dt = (
-                pd.to_datetime(f"{row['deploy_date']} {row['deploy_time']}")
-                if pd.notna(row["deploy_date"])
-                else times[0]
-            )
-            pickup_dt = (
-                pd.to_datetime(f"{row['pickup_date']} {row['pickup_time']}")
-                if pd.notna(row["pickup_date"])
-                else times[-1]
-            )
-
-            valid = xr.DataArray(
-                (times >= deploy_dt) & (times <= pickup_dt),
-                dims=[time_coord_name],
-                coords={time_coord_name: ds[time_coord_name]},
-            )
-            n_masked = int((~valid).sum())
-            if n_masked > 0:
-                for var in ds.data_vars:
-                    ds[var].loc[dict(sensor_idx=idx)] = (
-                        ds[var].sel(sensor_idx=idx).where(valid)
-                    )
-
-        # Apply wind direction correction
-        offsets = get_wind_dir_offsets(deployment_metadata_path)
-        if offsets:
-            _logger.info("Applying wind direction corrections...")
-            ds = apply_wind_direction_correction(ds, offsets, _logger)
-        else:
-            _logger.info("No wind direction offsets found in deployment metadata")
-
     # Generate output filename and save
-    site_name = file_path.stem  # Use filename for output file naming
+    # Use the filename rather than the logger label, which can be incorrect.
     _save_pace_netcdf(ds, dir_out, metadata, time_coord_name, site_name)
 
 
@@ -1716,7 +1853,7 @@ def merge_sites(
             "merged_from": ", ".join(source_sites),
             "merge_join": join,
             "n_sensors": len(merged_ds.sensor_idx),
-            "structure": "sensor_idx x datetime",
+            "structure": "sensor_idx x datetime_utc",
         }
     )
 
@@ -1743,10 +1880,9 @@ def _create_single_sensor_dataset(
     xr.Dataset
         Dataset with sensor_idx dimension restored and site_id updated
     """
-    # Get datetime coordinate name
-    datetime_coord = (
-        "datetime_utc" if "datetime_utc" in sensor_ds.coords else "datetime"
-    )
+    if "datetime_utc" not in sensor_ds.coords:
+        raise ValueError("Sensor dataset does not have a datetime_utc coordinate")
+    datetime_coord = "datetime_utc"
 
     # Build data variables
     data_vars = {}
@@ -1836,7 +1972,9 @@ def _log_sensor_correlation(sensors: list) -> None:
     ds1 = sensors[0]["dataset"]
     ds2 = sensors[1]["dataset"]
 
-    datetime_coord = "datetime_utc" if "datetime_utc" in ds1.coords else "datetime"
+    if "datetime_utc" not in ds1.coords or "datetime_utc" not in ds2.coords:
+        raise ValueError("Sensor correlation requires datetime_utc coordinates")
+    datetime_coord = "datetime_utc"
 
     # Align time arrays
     common_times = np.intersect1d(
@@ -1883,9 +2021,10 @@ def _average_sensors_at_height(
     xr.Dataset
         Averaged sensor as dataset with sensor_idx structure
     """
-    # Get datetime coordinate name from first sensor
     first_ds = sensors[0]["dataset"]
-    datetime_coord = "datetime_utc" if "datetime_utc" in first_ds.coords else "datetime"
+    if "datetime_utc" not in first_ds.coords:
+        raise ValueError("Sensor averaging requires datetime_utc coordinates")
+    datetime_coord = "datetime_utc"
 
     # Collect all time arrays
     all_times = [s["dataset"][datetime_coord].values for s in sensors]

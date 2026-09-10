@@ -15,6 +15,7 @@ into site-combined files (by_site/). This script:
 Created: 2025-10-03
 """
 
+import argparse
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -22,12 +23,14 @@ from pathlib import Path
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from matplotlib.lines import Line2D
+import cmocean as cmo
 
 from jiflr import ROOT
 from jiflr.data import load_all_pendant_data
 from jiflr.logging import indent, key_value, setup_pipeline_logging, subheader
 from jiflr.pipeline import merge_sites
-from jiflr.utils import get_deployment_periods
+from jiflr.utils import apply_deployment_mask, get_deployment_periods
 
 
 # =============================================================================
@@ -52,7 +55,7 @@ def merge_site_data(site_data_dict):
     Merge multiple sensor datasets for a site into a single dataset using sensor_idx concatenation.
 
     Uses sensor_idx structure with sensor attributes as coordinates.
-    Creates structure: data_vars(sensor_idx, datetime)
+    Creates structure: data_vars(sensor_idx, datetime_utc)
 
     Parameters
     ----------
@@ -115,7 +118,7 @@ def merge_site_data(site_data_dict):
             "sensor_type": "hobo pendant",
             "processing_step": "site_combined_sensor_idx",
             "n_sensors": len(combined_ds.sensor_idx),
-            "structure": "sensor_idx x datetime",
+            "structure": "sensor_idx x datetime_utc",
         }
     )
 
@@ -165,8 +168,125 @@ def _extract_height_from_sensor(ds, height_key):
     return height if height else "unknown"
 
 
+def _sensor_colors(n_sensors):
+    """Return evenly spaced categorical colors from a perceptual colormap."""
+    return cmo.cm.haline(np.linspace(0.25, 0.75, n_sensors))
+
+
+def _height_in_metres(height):
+    """Return a numeric sensor height, or None when it cannot be parsed."""
+    try:
+        return float(str(height).lower().replace("m", ""))
+    except ValueError:
+        return None
+
+
+def _masked_deployment_intervals(time_values, deployment_periods):
+    """Return intervals outside the deployment periods within the data extent."""
+    start, end = map(pd.Timestamp, (time_values[0], time_values[-1]))
+    deployed = []
+    for period_start, period_end in deployment_periods:
+        period_start, period_end = max(start, period_start), min(end, period_end)
+        if period_start < period_end:
+            deployed.append((period_start, period_end))
+
+    masked, cursor = [], start
+    for period_start, period_end in sorted(deployed):
+        if cursor < period_start:
+            masked.append((cursor, period_start))
+        cursor = max(cursor, period_end)
+    if cursor < end:
+        masked.append((cursor, end))
+    return masked
+
+
+def _deployment_time_mask(time_values, deployment_periods):
+    """Return True for timestamps inside at least one deployment period."""
+    if not deployment_periods:
+        return np.ones(len(time_values), dtype=bool)
+
+    timestamps = pd.to_datetime(time_values)
+    mask = np.zeros(len(timestamps), dtype=bool)
+    for start, end in deployment_periods:
+        mask |= (timestamps >= start) & (timestamps <= end)
+    return mask
+
+
+def _add_qc_readout(
+    deployment_ax,
+    statistics_ax,
+    site_name,
+    time_values,
+    sensor_info,
+    temp_values,
+    deployment_periods,
+):
+    """Add compact deployment and per-sensor temperature readouts."""
+    heights = ", ".join(sorted({str(sensor["height"]) for sensor in sensor_info}))
+    shielding = ", ".join(
+        sorted({str(sensor["shielding"]) for sensor in sensor_info})
+    )
+    start, end = map(pd.Timestamp, (time_values[0], time_values[-1]))
+    deployment_lines = [
+        f"Site: {site_name}",
+        f"Sensors: {len(sensor_info)}",
+        f"Heights: {heights}",
+        f"Shielding: {shielding}",
+        f"Data: {start:%Y-%m-%d} to {end:%Y-%m-%d}",
+        f"Time points: {len(time_values)}",
+        "",
+    ]
+    if deployment_periods:
+        deployment_lines.append("Deployment periods:")
+        for index, (period_start, period_end) in enumerate(deployment_periods, start=1):
+            duration = period_end - period_start
+            deployment_lines.append(
+                f"{index}. {period_start:%Y-%m-%d} to {period_end:%Y-%m-%d}"
+            )
+            deployment_lines.append(f"   {duration.days} days")
+    else:
+        deployment_lines.append("Deployment periods: unavailable")
+
+    statistics_lines = []
+    for sensor, values in zip(sensor_info, temp_values):
+        valid = values[np.isfinite(values)]
+        statistics_lines.append(f"{sensor['label']} (ID: {sensor['sensor_id']})")
+        if valid.size == 0:
+            statistics_lines.append("  No finite temperature observations")
+        else:
+            statistics_lines.append(
+                f"  Coverage: {100 * valid.size / values.size:.1f}%  "
+                f"Mean: {np.mean(valid):.2f} °C  SD: {np.std(valid):.2f} °C"
+            )
+            statistics_lines.append(
+                f"  Range: {np.min(valid):.2f} to {np.max(valid):.2f} °C"
+            )
+        statistics_lines.append("")
+
+    for ax, title, lines in (
+        (deployment_ax, "Data and deployment", deployment_lines),
+        (statistics_ax, "Temperature statistics", statistics_lines),
+    ):
+        ax.axis("off")
+        ax.set_title(title, loc="left")
+        ax.text(
+            0,
+            0.95,
+            "\n".join(lines),
+            transform=ax.transAxes,
+            va="top",
+            fontsize=7.5,
+        )
+
+
 def create_qc_plots(
-    combined_ds, site_name, output_dir, deployment_periods=None, logger=None
+    combined_ds,
+    site_name,
+    output_dir,
+    deployment_periods=None,
+    logger=None,
+    csv_deployment_path=None,
+    year=None,
 ):
     """
     Create quality control plots for a merged site dataset.
@@ -174,7 +294,7 @@ def create_qc_plots(
     Parameters
     ----------
     combined_ds : xarray.Dataset
-        Combined dataset with dimensions (sensor_idx, datetime)
+        Combined dataset with dimensions (sensor_idx, datetime_utc)
     site_name : str
         Name of the site for plot titles and filename
     output_dir : Path
@@ -188,31 +308,15 @@ def create_qc_plots(
     qc_plots_dir = output_dir / "qc_plots"
     qc_plots_dir.mkdir(parents=True, exist_ok=True)
 
-    # Set up the figure with subplots
-    fig = plt.figure(figsize=(16, 12))
-    fig.suptitle(
-        f"Quality Control Plots - Site {site_name}", fontsize=16, fontweight="bold"
-    )
-
-    # Create subplot layout: temperature time series spans full width on top,
-    # box plot and summary on bottom
-    gs = fig.add_gridspec(2, 2, height_ratios=[2, 1], width_ratios=[1, 1])
-    ax1 = fig.add_subplot(gs[0, :])  # Top row, full width
-    ax2 = fig.add_subplot(gs[1, 0])  # Bottom left
-    ax4 = fig.add_subplot(gs[1, 1])  # Bottom right
-
-    # Extract data - now using sensor_idx structure
-    temp_data = combined_ds["temp_c"]
-
-    # Get the appropriate datetime coordinate
-    if "datetime" in combined_ds.coords:
-        datetime_coords = combined_ds["datetime"]
-    elif "datetime_utc" in combined_ds.coords:
-        datetime_coords = combined_ds["datetime_utc"]
-    else:
+    if "datetime_utc" not in combined_ds.coords:
         if logger:
-            logger.warning(f"No datetime coordinate found for site {site_name}")
+            logger.warning(f"No datetime_utc coordinate found for site {site_name}")
         return
+    if "temp_c" not in combined_ds.data_vars:
+        raise ValueError(f"Site {site_name} has no temp_c data for QC plotting")
+
+    time_values = combined_ds["datetime_utc"].values
+    temp_data = combined_ds["temp_c"]
 
     # Get sensor metadata from coordinates
     n_sensors = len(combined_ds.sensor_idx)
@@ -245,38 +349,17 @@ def create_qc_plots(
             }
         )
 
-    # Color map for different sensors
-    colors = plt.cm.Set1(np.linspace(0, 1, max(n_sensors, 1)))
-
-    # Get deployment periods for this site using standardized function
+    # Deployment periods are used to shade data excluded by the deployment mask.
     site_deployment_periods = []
     if deployment_periods is not None:
         try:
-            # Use the standardized deployment period parsing from utils
-            csv_deployment_path = (
-                Path(ROOT) / "data" / "2025" / "metadata" / "deployment_periods.csv"
-            )
-            deployment_periods_dict = get_deployment_periods(
-                site_name, csv_deployment_path
-            )
-            planned_periods = deployment_periods_dict.get(site_name, [])
-
-            # Adjust deployment periods based on actual data availability
-            if planned_periods:
-                actual_data_start = pd.Timestamp(datetime_coords.values[0])
-                actual_data_end = pd.Timestamp(datetime_coords.values[-1])
-
-                for planned_start, planned_end in planned_periods:
-                    # Use actual data start if it's later than planned start
-                    adjusted_start = max(planned_start, actual_data_start)
-                    # Use actual data end if it's earlier than planned end
-                    adjusted_end = min(planned_end, actual_data_end)
-
-                    # Only include period if there's actual overlap
-                    if adjusted_start < adjusted_end:
-                        site_deployment_periods.append(
-                            (planned_start, planned_end, adjusted_start, adjusted_end)
-                        )
+            if csv_deployment_path is None or year is None:
+                raise ValueError(
+                    "csv_deployment_path and year are required for QC deployment shading"
+                )
+            site_deployment_periods = get_deployment_periods(
+                site_name, csv_deployment_path, year
+            ).get(site_name, [])
         except Exception as e:
             if logger:
                 logger.warning(
@@ -284,240 +367,182 @@ def create_qc_plots(
                 )
             site_deployment_periods = []
 
-    # Plot 1: Time series of temperature by sensor (full width)
-    for i, sensor in enumerate(sensor_info):
-        # Select data for this sensor
-        sensor_data = temp_data.isel(sensor_idx=sensor["index"])
-        label = sensor["label"]
+    sensor_values = [
+        temp_data.isel(sensor_idx=sensor["index"]).values
+        for sensor in sensor_info
+    ]
+    if not any(np.isfinite(values).any() for values in sensor_values):
+        raise ValueError(
+            f"Site {site_name} has no finite temperature values for QC plotting"
+        )
 
-        # Get the time series values
-        sensor_values = sensor_data.values
+    colors = _sensor_colors(n_sensors)
+    fig = plt.figure(
+        figsize=(16, max(10.5, 8.5 + 0.35 * n_sensors)),
+        dpi=200,
+        layout="constrained",
+    )
+    fig.suptitle(f"Temperature QC — Site {site_name}", fontsize=16, fontweight="bold")
+    grid = fig.add_gridspec(
+        3,
+        2,
+        height_ratios=[2.5, 1.25, max(1.25, 0.25 * n_sensors)],
+    )
+    ax_series = fig.add_subplot(grid[0, :])
+    ax_difference = fig.add_subplot(grid[1, :], sharex=ax_series)
+    ax_histogram = fig.add_subplot(grid[2, 0])
+    details_grid = grid[2, 1].subgridspec(1, 2, wspace=0.18)
+    ax_deployment = fig.add_subplot(details_grid[0, 0])
+    ax_statistics = fig.add_subplot(details_grid[0, 1])
 
-        # Only plot non-NaN values
-        valid_mask = ~np.isnan(sensor_values)
-        if np.any(valid_mask):
-            valid_times = datetime_coords.values[valid_mask]
-            valid_data = sensor_values[valid_mask]
+    masked_intervals = (
+        _masked_deployment_intervals(time_values, site_deployment_periods)
+        if site_deployment_periods
+        else []
+    )
+    for i, (start, end) in enumerate(masked_intervals):
+        ax_series.axvspan(
+            start,
+            end,
+            color="0.5",
+            alpha=0.2,
+            label="Masked outside deployment" if i == 0 else None,
+            zorder=0,
+        )
 
-            ax1.plot(
-                valid_times,
-                valid_data,
-                color=colors[i],
-                label=label,
-                alpha=0.7,
-                linewidth=1,
+    for sensor, values, color in zip(sensor_info, sensor_values, colors):
+        ax_series.plot(
+            time_values, values, color=color, label=sensor["label"], linewidth=0.65
+        )
+    ax_series.axhline(0, color="0.15", linewidth=1.5, zorder=1)
+    ax_series.set(
+        title="Temperature time series", xlabel="Date (UTC)", ylabel="Temperature (°C)"
+    )
+    ax_series.grid(True, alpha=0.25)
+    ax_series.legend(
+        loc="upper left", ncol=min(4, n_sensors), fontsize=8, framealpha=0.9
+    )
+    ax_series.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+    ax_series.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+    plt.setp(ax_series.xaxis.get_majorticklabels(), rotation=45, ha="right")
+
+    deployment_mask = _deployment_time_mask(time_values, site_deployment_periods)
+    valid_values = [
+        values[deployment_mask & np.isfinite(values)] for values in sensor_values
+    ]
+    if not any(values.size for values in valid_values):
+        raise ValueError(
+            f"Site {site_name} has no finite temperatures during deployment periods"
+        )
+    all_values = np.concatenate([values for values in valid_values if values.size])
+    bins = np.histogram_bin_edges(all_values, bins="auto")
+    for values, color in zip(valid_values, colors):
+        if values.size:
+            ax_histogram.hist(
+                values,
+                bins=bins,
+                density=True,
+                histtype="step",
+                color=color,
+                linewidth=1.2,
             )
+            ax_histogram.axvline(
+                np.mean(values), color=color, linestyle="-", linewidth=1
+            )
+            ax_histogram.axvline(
+                np.median(values), color=color, linestyle="--", linewidth=1
+            )
+    ax_histogram.axvline(0, color="0.15", linewidth=1.5, zorder=0)
+    ax_histogram.set(
+        title="Temperature distribution", xlabel="Temperature (°C)", ylabel="Density"
+    )
+    ax_histogram.grid(True, axis="y", alpha=0.25)
+    ax_histogram.legend(
+        handles=[
+            Line2D([], [], color="0.2", linestyle="-", label="Mean"),
+            Line2D([], [], color="0.2", linestyle="--", label="Median"),
+        ],
+        loc="upper left",
+        fontsize=7,
+        framealpha=0.9,
+    )
 
-    # Check if light data is available and add to second y-axis
-    if "intensity_lux" in combined_ds.data_vars:
-        # Create second y-axis for light data
-        ax1_light = ax1.twinx()
-
-        light_data = combined_ds["intensity_lux"]
-        # Use dashed lines and lighter colors for light data
-        light_colors = plt.cm.Set2(np.linspace(0, 1, max(n_sensors, 1)))
-
-        for i, sensor in enumerate(sensor_info):
-            # Select light data for this sensor
-            sensor_light = light_data.isel(sensor_idx=sensor["index"])
-            light_label = f"{sensor['label']} light"
-
-            # Get the time series values
-            sensor_light_values = sensor_light.values
-
-            # Only plot non-NaN values
-            valid_mask = ~np.isnan(sensor_light_values)
-            if np.any(valid_mask):
-                valid_times = datetime_coords.values[valid_mask]
-                valid_light = sensor_light_values[valid_mask]
-
-                ax1_light.plot(
-                    valid_times,
-                    valid_light,
-                    color=light_colors[i],
-                    label=light_label,
-                    alpha=0.6,
-                    linewidth=1,
-                    linestyle="--",
-                )
-
-        ax1_light.set_ylabel("Light Intensity (lux)", color="orange")
-        ax1_light.tick_params(axis="y", labelcolor="orange")
-
-        # Create combined legend for both axes
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax1_light.get_legend_handles_labels()
-
-        # Only create light legend if there's light data
-        if lines2:
-            ax1.legend(
-                lines1 + lines2,
-                labels1 + labels2,
-                title="Height/Shielding (temp/light)",
-                bbox_to_anchor=(1.05, 1),
-                loc="upper left",
+    height_indices = {
+        height: [
+            sensor["index"]
+            for sensor in sensor_info
+            if _height_in_metres(sensor["height"]) == height
+        ]
+        for height in (1.0, 2.0)
+    }
+    if height_indices[1.0] and height_indices[2.0]:
+        one_m_values = temp_data.isel(sensor_idx=height_indices[1.0]).values
+        two_m_values = temp_data.isel(sensor_idx=height_indices[2.0]).values
+        overlapping_times = np.isfinite(one_m_values).any(axis=0) & np.isfinite(
+            two_m_values
+        ).any(axis=0)
+        if overlapping_times.any():
+            one_m = np.nanmean(
+                one_m_values[:, overlapping_times], axis=0
+            )
+            two_m = np.nanmean(
+                two_m_values[:, overlapping_times], axis=0
+            )
+            ax_difference.plot(
+                time_values[overlapping_times],
+                two_m - one_m,
+                color=cmo.cm.balance(0.2),
+                linewidth=0.65,
             )
         else:
-            ax1.legend(
-                title="Height/Shielding", bbox_to_anchor=(1.05, 1), loc="upper left"
+            ax_difference.text(
+                0.5,
+                0.5,
+                "No overlapping 1 m and 2 m observations",
+                ha="center",
+                va="center",
+                transform=ax_difference.transAxes,
             )
     else:
-        ax1.legend(title="Height/Shielding", bbox_to_anchor=(1.05, 1), loc="upper left")
-
-    # Add deployment period shading to time series plot
-    if site_deployment_periods:
-        for i, (planned_start, planned_end, adjusted_start, adjusted_end) in enumerate(
-            site_deployment_periods
-        ):
-            ax1.axvspan(
-                adjusted_start,
-                adjusted_end,
-                alpha=0.2,
-                color="gray",
-                label="Deployment Period" if i == 0 else "",
-            )
-
-    ax1.set_xlabel("Date")
-    ax1.set_ylabel("Temperature (C)")
-    ax1.set_title("Temperature Time Series by Height")
-    ax1.grid(True, alpha=0.3)
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
-    ax1.xaxis.set_major_locator(mdates.DayLocator())
-    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
-
-    # Plot 2: Temperature distribution by sensor (box plot)
-    temp_data_for_box = []
-    sensor_labels = []
-
-    for i, sensor in enumerate(sensor_info):
-        # Select data for this sensor
-        sensor_data = temp_data.isel(sensor_idx=sensor["index"])
-        label = f"{sensor['height']}\n({sensor['shielding']})"
-
-        # Get values and remove NaN
-        sensor_values = sensor_data.values
-        sensor_data_clean = sensor_values[~np.isnan(sensor_values)]
-
-        if len(sensor_data_clean) > 0:
-            temp_data_for_box.append(sensor_data_clean)
-            sensor_labels.append(label)
-
-    if temp_data_for_box:
-        bp = ax2.boxplot(
-            temp_data_for_box, tick_labels=sensor_labels, patch_artist=True
+        ax_difference.text(
+            0.5,
+            0.5,
+            "Requires both 1 m and 2 m sensors",
+            ha="center",
+            va="center",
+            transform=ax_difference.transAxes,
         )
-        for patch, color in zip(bp["boxes"], colors[: len(temp_data_for_box)]):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.7)
-
-    ax2.set_xlabel("Height/Shielding")
-    ax2.set_ylabel("Temperature (C)")
-    ax2.set_title("Temperature Distribution by Height and Shielding")
-    ax2.grid(True, alpha=0.3)
-    # Rotate labels if needed for better readability
-    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha="right")
-
-    # Plot 3: Summary statistics
-    # ax4 already defined above
-    ax4.axis("off")  # Turn off axes for text summary
-
-    # Calculate summary statistics
-    stats_text = f"Site {site_name} - Data Summary\n"
-    stats_text += "=" * 30 + "\n\n"
-    stats_text += f"Number of sensors: {n_sensors}\n"
-    unique_heights = sorted(set([s["height"] for s in sensor_info]))
-    unique_shielding = sorted(set([s["shielding"] for s in sensor_info]))
-    stats_text += f"Heights: {', '.join([str(h) for h in unique_heights])}\n"
-    stats_text += f"Shielding types: {', '.join([str(s) for s in unique_shielding])}\n"
-
-    stats_text += (
-        f"Data period: {datetime_coords.values[0]} to {datetime_coords.values[-1]}\n"
+    ax_difference.axhline(0, color="0.15", linewidth=1.5, zorder=0)
+    ax_difference.set(
+        title="2 m − 1 m temperature difference",
+        xlabel="Date (UTC)",
+        ylabel="Difference (°C)",
     )
-    stats_text += f"Total time points: {len(datetime_coords)}\n\n"
+    ax_difference.grid(True, alpha=0.25)
+    ax_difference.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+    ax_difference.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+    plt.setp(ax_difference.xaxis.get_majorticklabels(), rotation=45, ha="right")
 
-    # Add deployment period information
-    stats_text += "Deployment Periods:\n"
-    stats_text += "-" * 20 + "\n"
-    if site_deployment_periods:
-        for i, (planned_start, planned_end, adjusted_start, adjusted_end) in enumerate(
-            site_deployment_periods
-        ):
-            stats_text += f"Period {i + 1}:\n"
-            stats_text += f"  Start: {adjusted_start.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            stats_text += f"  End: {adjusted_end.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            duration = adjusted_end - adjusted_start
-            stats_text += f"  Duration: {duration.days} days\n\n"
-    else:
-        stats_text += "No deployment periods found\n\n"
-
-    stats_text += "Temperature Statistics by Sensor:\n"
-    stats_text += "-" * 35 + "\n"
-
-    for sensor in sensor_info:
-        # Select data for this sensor
-        sensor_data = temp_data.isel(sensor_idx=sensor["index"])
-        sensor_label = sensor["label"]
-
-        # Get values and calculate statistics
-        sensor_values = sensor_data.values
-        valid_data = sensor_values[~np.isnan(sensor_values)]
-
-        if len(valid_data) > 0:
-            coverage = len(valid_data) / len(sensor_values) * 100
-            stats_text += f"{sensor_label} (ID: {sensor['sensor_id']}):\n"
-            stats_text += f"  Coverage: {coverage:.1f}%\n"
-            stats_text += f"  Mean: {np.mean(valid_data):.2f}C\n"
-            stats_text += (
-                f"  Range: {np.min(valid_data):.2f} to {np.max(valid_data):.2f}C\n"
-            )
-            stats_text += f"  Std: {np.std(valid_data):.2f}C\n\n"
-
-    # Add light data statistics if available
-    if "intensity_lux" in combined_ds.data_vars:
-        light_data = combined_ds["intensity_lux"]
-        stats_text += "Light Intensity Statistics by Sensor:\n"
-        stats_text += "-" * 38 + "\n"
-
-        for sensor in sensor_info:
-            # Select light data for this sensor
-            sensor_light = light_data.isel(sensor_idx=sensor["index"])
-            sensor_label = sensor["label"]
-
-            # Get values and calculate statistics
-            sensor_light_values = sensor_light.values
-            valid_light = sensor_light_values[~np.isnan(sensor_light_values)]
-
-            if len(valid_light) > 0:
-                coverage = len(valid_light) / len(sensor_light_values) * 100
-                stats_text += f"{sensor_label} (ID: {sensor['sensor_id']}):\n"
-                stats_text += f"  Coverage: {coverage:.1f}%\n"
-                stats_text += f"  Mean: {np.mean(valid_light):.1f} lux\n"
-                stats_text += f"  Range: {np.min(valid_light):.1f} to {np.max(valid_light):.1f} lux\n"
-                stats_text += f"  Std: {np.std(valid_light):.1f} lux\n\n"
-
-    ax4.text(
-        0.05,
-        0.95,
-        stats_text,
-        transform=ax4.transAxes,
-        fontsize=10,
-        verticalalignment="top",
-        fontfamily="monospace",
+    _add_qc_readout(
+        ax_deployment,
+        ax_statistics,
+        site_name,
+        time_values,
+        sensor_info,
+        [values[deployment_mask] for values in sensor_values],
+        site_deployment_periods,
     )
-
-    # Adjust layout and save
-    plt.tight_layout()
 
     # Save the plot
     output_file = qc_plots_dir / f"{site_name}_qc.png"
-    plt.savefig(output_file, dpi=150, bbox_inches="tight")
-    plt.close()
+    fig.savefig(output_file, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
     if logger:
         logger.info(indent(f"QC plot saved: {output_file.name}", level=2))
 
 
-def process_directory(input_dir, output_dir, csv_deployment_path, logger):
+def process_directory(input_dir, output_dir, csv_deployment_path, year, logger):
     """
     Process all NetCDF files in a directory and merge by site.
 
@@ -542,15 +567,16 @@ def process_directory(input_dir, output_dir, csv_deployment_path, logger):
         except Exception as e:
             logger.warning(f"Could not load deployment periods CSV: {e}")
 
-    # Load all site data from input directory
+    # Generate QC plots immediately before deployment masking is applied.
     site_data = load_all_pendant_data(
         processed_dir=input_dir,
         csv_deployment_path=csv_deployment_path,
-        use_csv_masking=True,  # Enable deployed masking
+        year=year,
+        use_csv_masking=True,
         required_heights=None,  # Load all available heights
         drop_events=True,
         drop_light=False,  # Preserve light data
-        apply_mask_to_data=True,  # Apply masks during loading to avoid dimension issues
+        apply_mask_to_data=False,
     )
 
     logger.info(f"Found {len(site_data)} sites")
@@ -562,12 +588,40 @@ def process_directory(input_dir, output_dir, csv_deployment_path, logger):
     for site_name, sensors in tqdm(site_data.items(), desc="Merging sites"):
         logger.info(indent(f"Processing site: {site_name}"))
 
-        # Merge sensors for this site (masks already applied during loading)
-        combined_ds = merge_site_data(sensors)
+        pre_mask_combined_ds = merge_site_data(sensors)
 
-        if combined_ds is None:
+        if pre_mask_combined_ds is None:
             logger.warning(indent(f"No valid data for site {site_name}", level=2))
             continue
+
+        # Show observations that the following deployment-mask operation removes.
+        create_qc_plots(
+            pre_mask_combined_ds,
+            site_name,
+            output_dir,
+            deployment_periods,
+            logger,
+            csv_deployment_path=csv_deployment_path,
+            year=year,
+        )
+
+        try:
+            combined_ds = apply_deployment_mask(
+                pre_mask_combined_ds,
+                site_name,
+                csv_deployment_path,
+                year,
+                ignore_missing=True,
+            )
+        except Exception as error:
+            logger.warning(
+                indent(
+                    f"Could not apply deployment mask for {site_name}: {error}. "
+                    "Saving unmasked data.",
+                    level=2,
+                )
+            )
+            combined_ds = pre_mask_combined_ds
 
         # Create output filename
         output_file = output_dir / f"{site_name}.nc"
@@ -576,16 +630,11 @@ def process_directory(input_dir, output_dir, csv_deployment_path, logger):
         combined_ds.to_netcdf(output_file)
         logger.info(indent(f"Saved: {output_file.name}", level=2))
 
-        # Create QC plots for this site
-        create_qc_plots(combined_ds, site_name, output_dir, deployment_periods, logger)
-
         # Print summary
         n_sensors = (
             len(combined_ds.sensor_idx) if "sensor_idx" in combined_ds.dims else 0
         )
-        datetime_coord = (
-            "datetime" if "datetime" in combined_ds.dims else "datetime_utc"
-        )
+        datetime_coord = "datetime_utc"
         data_points = (
             len(combined_ds[datetime_coord])
             if datetime_coord in combined_ds.dims
@@ -606,15 +655,19 @@ def process_directory(input_dir, output_dir, csv_deployment_path, logger):
 
 def main():
     """Main function to merge pendant data by site."""
+    parser = argparse.ArgumentParser(description="Merge pendant data by site for one field season")
+    parser.add_argument("--year", required=True, type=int, help="Field season to process")
+    args = parser.parse_args()
+    year = args.year
     # Set up logging (appends to pipeline log if running as part of pipeline)
-    logger = setup_pipeline_logging(step_number=3, total_steps=6, mode="a")
+    logger = setup_pipeline_logging(step_number=3, total_steps=7, mode="a")
 
     # Define paths
-    base_dir = Path(ROOT) / "data" / "2025" / "intermediate" / "pendants"
+    base_dir = Path(ROOT) / "data" / str(year) / "intermediate" / "pendants"
     input_base = base_dir / "by_sensor"
     output_base = base_dir / "by_site"
     csv_deployment_path = (
-        Path(ROOT) / "data" / "2025" / "metadata" / "deployment_periods.csv"
+        Path(ROOT) / "data" / str(year) / "metadata" / "deployment_periods.csv"
     )
 
     logger.info(key_value("Input base directory", str(input_base)))
@@ -626,7 +679,7 @@ def main():
     main_input = input_base
     main_output = output_base
 
-    process_directory(main_input, main_output, csv_deployment_path, logger)
+    process_directory(main_input, main_output, csv_deployment_path, year, logger)
 
     # Process subdirectories
     # TODO: Make this procedural
@@ -637,7 +690,7 @@ def main():
         subdir_output = output_base / subdir
 
         if subdir_input.exists() and any(subdir_input.glob("*.nc")):
-            process_directory(subdir_input, subdir_output, csv_deployment_path, logger)
+            process_directory(subdir_input, subdir_output, csv_deployment_path, year, logger)
         else:
             logger.info(f"Skipping {subdir} subdirectory (not found or empty)")
 
@@ -718,7 +771,8 @@ def main():
 
                 # Create QC plot for merged site
                 create_qc_plots(
-                    merged_ds, target_site, output_dir, deployment_periods, logger
+                    merged_ds, target_site, output_dir, deployment_periods, logger,
+                    csv_deployment_path=csv_deployment_path, year=year,
                 )
             else:
                 logger.warning(
