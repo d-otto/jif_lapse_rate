@@ -160,7 +160,7 @@ def unstack_sensor_idx(
     >>> temp_data = unstacked.temp_c.sel(site_id='A01', height='2m')
     """
     if coords is None:
-        coords = ["site_id", "height", "shielding", "sensor_type"]
+        coords = ["year", "site_id", "height", "shielding", "sensor_type"]
 
     ds_indexed = ds.set_index(sensor_idx=coords)
 
@@ -278,8 +278,11 @@ def _load_netcdf(nc_file: Path) -> Optional[Dict[str, Any]]:
             ds.sensor_id.values[sensor_idx] if "sensor_id" in ds.coords else "Unknown"
         )
 
-        datetime_coord = "datetime" if "datetime" in ds.coords else "datetime_utc"
-        temp_data = ds["temp_c"].isel(sensor_idx=0).dropna(datetime_coord)
+        if "datetime_utc" not in ds.coords:
+            raise ValueError(
+                f"File {nc_file.name} does not have the required datetime_utc coordinate"
+            )
+        temp_data = ds["temp_c"].isel(sensor_idx=0).dropna("datetime_utc")
 
         if len(temp_data) < 10:
             return None
@@ -292,6 +295,8 @@ def _load_netcdf(nc_file: Path) -> Optional[Dict[str, Any]]:
             "file": nc_file.name,
         }
 
+    except ValueError:
+        raise
     except Exception as e:
         print(f"Error loading {nc_file}: {e}")
         return None
@@ -300,6 +305,7 @@ def _load_netcdf(nc_file: Path) -> Optional[Dict[str, Any]]:
 def load_all_pendant_data(
     processed_dir: Path,
     csv_deployment_path: Path,
+    year: int,
     use_csv_masking: bool = True,
     required_heights: Optional[List[str]] = None,
     drop_events: bool = True,
@@ -360,6 +366,7 @@ def load_all_pendant_data(
                     sensor_info["dataset"],
                     site_name,
                     csv_deployment_path,
+                    year,
                     ignore_missing=True,
                 )
             except Exception as e:
@@ -552,9 +559,9 @@ def find_overlapping_period(
 
     for ds in datasets:
         try:
-            temp_data = ds["temp_c"].dropna("datetime")
-            start_times.append(temp_data.datetime.min().values)
-            end_times.append(temp_data.datetime.max().values)
+            temp_data = ds["temp_c"].dropna("datetime_utc")
+            start_times.append(temp_data.datetime_utc.min().values)
+            end_times.append(temp_data.datetime_utc.max().values)
         except (KeyError, AttributeError):
             return None, None
 
@@ -620,8 +627,8 @@ def interpolate_to_common_grid(
 
     # Interpolate each dataset
     for ds in datasets:
-        temp_data = ds["temp_c"].dropna("datetime")
-        temp_interp = temp_data.interp(datetime=common_times, method="linear")
+        temp_data = ds["temp_c"].dropna("datetime_utc")
+        temp_interp = temp_data.interp(datetime_utc=common_times, method="linear")
         interp_arrays.append(temp_interp.values)
 
     # Find valid mask (all datasets have non-NaN values)
@@ -922,7 +929,7 @@ def load_and_merge_lvl0_data(
         Merged dataset with harmonized dimensions:
         - site_id: All unique sites from both datasets
         - height: All unique heights from both datasets
-        - datetime: Overlapping time period from both datasets
+        - datetime_utc: Overlapping UTC time period from both datasets
         - Variables from both datasets, with NaN for missing combinations
 
     Raises
@@ -968,8 +975,8 @@ def load_and_merge_lvl0_data(
     # Apply time slice if provided
     if time_slice is not None:
         print(f"Applying time slice: {time_slice}")
-        ds_main = ds_main.sel(datetime=time_slice)
-        ds_intensive = ds_intensive.sel(datetime=time_slice)
+        ds_main = ds_main.sel(datetime_utc=time_slice)
+        ds_intensive = ds_intensive.sel(datetime_utc=time_slice)
 
     # Harmonize coordinate names and structures
     print("Harmonizing dataset structures...")
@@ -996,7 +1003,7 @@ def load_and_merge_lvl0_data(
             ds_main = ds_main.isel(site_id=slice(0, 0))
 
     # With the new sensor_idx structure, merging is much simpler
-    # Both datasets should now have dimensions: (sensor_idx, datetime)
+    # Both datasets should now have dimensions: (sensor_idx, datetime_utc)
     # Sensor attributes are stored as coordinates indexed by sensor_idx
 
     # The datasets can be concatenated directly along the sensor_idx dimension
@@ -1004,13 +1011,13 @@ def load_and_merge_lvl0_data(
     ds_intensive_modified = ds_intensive.copy()
 
     # Find common time period
-    time_main = pd.to_datetime(ds_main_modified.datetime.values)
-    time_intensive = pd.to_datetime(ds_intensive_modified.datetime.values)
+    time_main = pd.to_datetime(ds_main_modified.datetime_utc.values)
+    time_intensive = pd.to_datetime(ds_intensive_modified.datetime_utc.values)
 
-    # Convert datetime coordinates to comparable format
-    if hasattr(ds_main_modified.datetime, "values"):
+    # Convert UTC datetime coordinates to comparable format
+    if hasattr(ds_main_modified.datetime_utc, "values"):
         time_main_range = (time_main.min(), time_main.max())
-    if hasattr(ds_intensive_modified.datetime, "values"):
+    if hasattr(ds_intensive_modified.datetime_utc, "values"):
         time_intensive_range = (time_intensive.min(), time_intensive.max())
 
     print(f"Main dataset time range: {time_main_range[0]} to {time_main_range[1]}")
@@ -1053,7 +1060,7 @@ def load_and_merge_lvl0_data(
                 if drop_conflicting_sites
                 else [],
                 "drop_conflicting_sites": drop_conflicting_sites,
-                "structure": "sensor_idx × datetime",
+                "structure": "sensor_idx × datetime_utc",
             }
         )
 
@@ -1084,7 +1091,7 @@ def get_overlap_window(da: xr.DataArray) -> xr.DataArray:
     Parameters
     ----------
     da : xr.DataArray
-        Temperature array with dimensions (datetime, sensor_idx).
+        Temperature array with dimensions (datetime_utc, sensor_idx).
 
     Returns
     -------
@@ -1092,17 +1099,17 @@ def get_overlap_window(da: xr.DataArray) -> xr.DataArray:
         *da* sliced to the complete-data timesteps only.
     """
     has_data = da.notnull().all(dim="sensor_idx")
-    return da.sel(datetime=has_data)
+    return da.sel(datetime_utc=has_data)
 
 
 def overlap_date_range(da: xr.DataArray) -> tuple[str, str, int]:
     """
-    Extract (start_str, end_str, n_days) from a DataArray's datetime extent.
+    Extract (start_str, end_str, n_days) from a DataArray's UTC time extent.
 
     Parameters
     ----------
     da : xr.DataArray
-        Any DataArray with a datetime coordinate.
+        Any DataArray with a datetime_utc coordinate.
 
     Returns
     -------
@@ -1110,8 +1117,8 @@ def overlap_date_range(da: xr.DataArray) -> tuple[str, str, int]:
         ISO date strings for the first and last timestep, and the number
         of whole days between them.
     """
-    t0 = pd.Timestamp(da.datetime.values[0])
-    t1 = pd.Timestamp(da.datetime.values[-1])
+    t0 = pd.Timestamp(da.datetime_utc.values[0])
+    t1 = pd.Timestamp(da.datetime_utc.values[-1])
     return t0.strftime("%Y-%m-%d"), t1.strftime("%Y-%m-%d"), (t1 - t0).days
 
 

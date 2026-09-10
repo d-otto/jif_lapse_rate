@@ -19,6 +19,7 @@ from typing import Union, Optional, Tuple, List, Dict
 from pathlib import Path
 import xarray as xr
 import datetime
+from zoneinfo import ZoneInfo
 from scipy import stats
 
 from astral import LocationInfo
@@ -599,11 +600,60 @@ def butterworth_filter(
     return filtered_data
 
 
+def convert_local_time_to_utc(
+    value: pd.Timestamp,
+    *,
+    local_timezone: str = "America/Anchorage",
+) -> pd.Timestamp:
+    """Convert a local field-note timestamp to a timezone-naive UTC timestamp.
+
+    Field notes use the civil time for ``local_timezone``. Resolving the IANA
+    timezone before converting to UTC applies the correct daylight-saving rule
+    for the timestamp's date.
+    """
+    timestamp = pd.Timestamp(value)
+    if pd.isna(timestamp):
+        raise ValueError("Cannot convert a missing deployment timestamp")
+
+    timezone = ZoneInfo(local_timezone)
+    if timestamp.tzinfo is None:
+        local_time = timestamp.tz_localize(
+            timezone, ambiguous="raise", nonexistent="raise"
+        )
+    else:
+        local_time = timestamp.tz_convert(timezone)
+
+    return local_time.tz_convert("UTC").tz_localize(None)
+
+
+def convert_utc_time_to_local(
+    value: pd.Timestamp,
+    *,
+    local_timezone: str = "America/Anchorage",
+) -> pd.Timestamp:
+    """Convert a timezone-naive UTC timestamp for local display.
+
+    This helper is intended for plotting and human-facing exports. Pipeline
+    datasets retain their canonical ``datetime_utc`` coordinate.
+    """
+    timestamp = pd.Timestamp(value)
+    if pd.isna(timestamp):
+        raise ValueError("Cannot convert a missing UTC timestamp")
+
+    if timestamp.tzinfo is None:
+        utc_time = timestamp.tz_localize("UTC")
+    else:
+        utc_time = timestamp.tz_convert("UTC")
+    return utc_time.tz_convert(ZoneInfo(local_timezone)).tz_localize(None)
+
+
 def get_deployment_periods(
     site_id: Union[str, List[str]],
     csv_path: Union[str, Path],
+    year: int,
     default_start: Optional[pd.Timestamp] = None,
     logger: Optional["logging.Logger"] = None,
+    local_timezone: str = "America/Anchorage",
 ) -> Dict[str, List[Tuple[pd.Timestamp, pd.Timestamp]]]:
     """
     Get deployment periods for one or more sites from CSV file.
@@ -615,10 +665,13 @@ def get_deployment_periods(
     csv_path : str or Path
         Path to CSV file containing deployment periods
     default_start : pd.Timestamp, optional
-        Default start time to use when deploy_date is missing in CSV.
+        UTC default start time to use when deploy_date is missing in CSV.
         If None, rows with missing deploy_date are skipped.
     logger : logging.Logger, optional
         Logger for warning messages when default_start is used.
+    local_timezone : str, optional
+        Timezone used for deployment and pickup notes (default:
+        ``"America/Anchorage"``).
 
     Returns
     -------
@@ -628,15 +681,18 @@ def get_deployment_periods(
     Examples
     --------
     >>> # Single site
-    >>> periods = get_deployment_periods('A01', 'deployment_periods.csv')
+    >>> periods = get_deployment_periods('A01', 'deployment_periods.csv', 2026)
     >>> # {'A01': [(Timestamp('2025-01-01'), Timestamp('2025-07-19')), ...]}
 
     >>> # Multiple sites
-    >>> periods = get_deployment_periods(['A01', 'B02'], 'deployment_periods.csv')
+    >>> periods = get_deployment_periods(['A01', 'B02'], 'deployment_periods.csv', 2026)
     >>> # {'A01': [(start, end), ...], 'B02': [(start, end), ...]}
     """
-    # Load deployment periods CSV
-    df_periods = pd.read_csv(csv_path)
+    from jiflr.pipeline import read_season_metadata
+
+    df_periods = read_season_metadata(
+        Path(csv_path), year, source_name="deployment periods"
+    )
 
     # Convert to list if single site
     site_list = [site_id] if isinstance(site_id, str) else site_id
@@ -678,7 +734,10 @@ def get_deployment_periods(
                     deploy_time = "00:00:00"
                 # Combine date and time strings and parse
                 deploy_datetime_str = f"{deploy_date} {deploy_time}"
-                deploy_datetime = pd.to_datetime(deploy_datetime_str)
+                deploy_datetime = convert_local_time_to_utc(
+                    pd.to_datetime(deploy_datetime_str),
+                    local_timezone=local_timezone,
+                )
 
             # Handle missing pickup time
             if pd.isna(pickup_time) or pickup_time == "":
@@ -686,7 +745,10 @@ def get_deployment_periods(
 
             # Parse pickup datetime
             pickup_datetime_str = f"{pickup_date} {pickup_time}"
-            pickup_datetime = pd.to_datetime(pickup_datetime_str)
+            pickup_datetime = convert_local_time_to_utc(
+                pd.to_datetime(pickup_datetime_str),
+                local_timezone=local_timezone,
+            )
 
             periods.append((deploy_datetime, pickup_datetime))
 
@@ -695,7 +757,7 @@ def get_deployment_periods(
     return result
 
 
-def get_wind_dir_offsets(csv_path: Union[str, Path]) -> Dict[str, float]:
+def get_wind_dir_offsets(csv_path: Union[str, Path], year: int) -> Dict[str, float]:
     """Load wind direction offset corrections from deployment metadata CSV.
 
     Reads the wind_dir_offset_deg column from deployment_periods.csv and returns
@@ -728,8 +790,11 @@ def get_wind_dir_offsets(csv_path: Union[str, Path]) -> Dict[str, float]:
         return {}
 
     try:
-        # Read CSV
-        df = pd.read_csv(csv_path)
+        from jiflr.pipeline import read_season_metadata
+
+        df = read_season_metadata(
+            csv_path, year, source_name="deployment periods"
+        )
 
         # Check if wind_dir_offset_deg column exists
         if "wind_dir_offset_deg" not in df.columns:
@@ -759,6 +824,7 @@ def deployment_mask(
     ds: xr.Dataset,
     site_id: str,
     csv_path: Path,
+    year: int,
     ignore_missing: bool = False,
 ) -> np.ndarray:
     """
@@ -769,7 +835,7 @@ def deployment_mask(
     Parameters
     ----------
     ds : xr.Dataset
-        Dataset with a 'datetime' or 'datetime_utc' coordinate.
+        Dataset with a timezone-naive UTC ``datetime_utc`` coordinate.
     site_id : str
         Site identifier to look up in the deployment periods CSV.
     csv_path : Path
@@ -788,10 +854,13 @@ def deployment_mask(
     ValueError
         If no deployment periods are found and ignore_missing is False.
     """
-    datetime_coord_name = "datetime" if "datetime" in ds.coords else "datetime_utc"
-    datetime_values = pd.to_datetime(ds.coords[datetime_coord_name].values)
+    if "datetime_utc" not in ds.coords:
+        raise ValueError(
+            "Deployment masking requires a UTC 'datetime_utc' coordinate"
+        )
+    datetime_values = pd.to_datetime(ds.coords["datetime_utc"].values)
 
-    periods_dict = get_deployment_periods(site_id, csv_path)
+    periods_dict = get_deployment_periods(site_id, csv_path, year)
     periods = periods_dict.get(site_id, [])
 
     if not periods:
@@ -811,6 +880,7 @@ def apply_deployment_mask(
     ds: xr.Dataset,
     site_id: str,
     csv_path: Path,
+    year: int,
     ignore_missing: bool = False,
 ) -> xr.Dataset:
     """
@@ -819,7 +889,7 @@ def apply_deployment_mask(
     Parameters
     ----------
     ds : xr.Dataset
-        Dataset with a 'datetime' or 'datetime_utc' coordinate.
+        Dataset with a timezone-naive UTC ``datetime_utc`` coordinate.
     site_id : str
         Site identifier to look up in the deployment periods CSV.
     csv_path : Path
@@ -839,8 +909,12 @@ def apply_deployment_mask(
     ValueError
         If no deployment periods are found and ignore_missing is False.
     """
-    datetime_coord_name = "datetime" if "datetime" in ds.coords else "datetime_utc"
-    mask = deployment_mask(ds, site_id, csv_path, ignore_missing=ignore_missing)
+    if "datetime_utc" not in ds.coords:
+        raise ValueError(
+            "Deployment masking requires a UTC 'datetime_utc' coordinate"
+        )
+    datetime_coord_name = "datetime_utc"
+    mask = deployment_mask(ds, site_id, csv_path, year, ignore_missing=ignore_missing)
 
     ds_out = ds.copy()
     for var_name in ds.data_vars:

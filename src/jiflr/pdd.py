@@ -115,22 +115,22 @@ def sum_observed_pdds(da: xr.DataArray) -> pd.Series:
     Compute observed PDD from a DataArray of temperatures by summing
     positive values and scaling each timestep to degree-days.
 
-    The temporal resolution is inferred from the datetime coordinate,
+    The temporal resolution is inferred from the datetime_utc coordinate,
     so the function works for any regular sampling frequency.
 
     Parameters
     ----------
     da : xr.DataArray
-        Temperature array with dimensions (datetime, sensor_idx).
+        Temperature array with dimensions (datetime_utc, sensor_idx).
         Must have a 'site_id' coordinate on sensor_idx and a regular
-        datetime coordinate.
+        datetime_utc coordinate.
 
     Returns
     -------
     pd.Series
         PDD in degree-days, indexed by site_id.
     """
-    dti = pd.DatetimeIndex(da.datetime.values)
+    dti = pd.DatetimeIndex(da.datetime_utc.values)
 
     if dti.freq is not None:
         step_days = dti.freq.nanos / 1e9 / 86_400.0
@@ -138,7 +138,7 @@ def sum_observed_pdds(da: xr.DataArray) -> pd.Series:
         median_ns = float(np.median(np.diff(dti.asi8)))
         step_days = median_ns / 1e9 / 86_400.0
 
-    pdd_vals = da.where(da > 0, 0).sum(dim="datetime") * step_days
+    pdd_vals = da.where(da > 0, 0).sum(dim="datetime_utc") * step_days
 
     return pd.Series(
         pdd_vals.values,
@@ -165,7 +165,7 @@ def get_theoretical_pdd(
     Parameters
     ----------
     da_period : xr.DataArray
-        Temperature array with dimensions (datetime, sensor_idx).
+        Temperature array with dimensions (datetime_utc, sensor_idx).
         Must have 'site_id' and 'elevation' coordinates on sensor_idx.
     t_ma_0 : float
         Mean annual temperature at reference elevation (°C).
@@ -190,8 +190,8 @@ def get_theoretical_pdd(
         Length of the overlapping period in days.
     """
     has_data = da_period.notnull().all(dim="sensor_idx")
-    da_overlap = da_period.sel(datetime=has_data)
-    overlap_dti = pd.DatetimeIndex(da_overlap.datetime.values)
+    da_overlap = da_period.sel(datetime_utc=has_data)
+    overlap_dti = pd.DatetimeIndex(da_overlap.datetime_utc.values)
 
     elev = (
         da_period.to_dataframe(name="temp_c")
