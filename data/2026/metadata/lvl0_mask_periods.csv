@@ -1,0 +1,8 @@
+start_datetime_utc,end_datetime_utc,site_id,sensor_id,variable,notes
+2026-07-24T01:35:00Z,,A19,,,Station fell over
+2026-07-24T01:05:00Z,,A18,,temp_c,Station fell over
+2026-07-24T01:05:00Z,,A18,,wind_direction,Station fell over
+2026-07-24T01:05:00Z,,A18,,relative_humidity,Station fell over
+2026-07-24T01:05:00Z,,A18,,wind_speed_avg,Station fell over
+2026-07-24T01:05:00Z,,A18,,wind_speed_max,Station fell over
+2026-07-24T01:05:00Z,,A18,,rainfall_mm,Station fell over

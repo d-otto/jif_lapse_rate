@@ -1,44 +1,44 @@
-﻿year,site,latitude,longitude,site_elevation,deploy_date,deploy_time,pickup_date,pickup_time,abl_initial_cm,abl_final_cm,height_change,base_titled,sfc_notes,sun_cup_long_ax_lens_cm,wx_notes,wind_dir_offset_deg,pickup_notes,notes,retrieved_by,photos_by,approx_elev,,
-2026,A01,,,,6/13/26,17:22,7/15/26,10:53,,,,FALSE,many medium suncups,"51,40.6,35.6",overcast,,,,Francis,Francis,,,
-2026,B06,,,,,,7/15/26,11:31,,,,W,many shallow suncups ranging in size small-medium,"29.2,26.7,54.6",overcast/foggy,,,"Tilted with slope angle of surface, not sunk into snow",Francis,Francis,,,
-2026,B05,,,,,,7/15/26,11:52,,,,FALSE,"many medium suncups, some algae","28,28.6,25.4","light precip, low clouds",,,,Francis,Francis,,,
-2026,B04,,,,,,7/15/26,12:14,,,,FALSE,many medium suncups,"35.6,35.6,28.0","low clouds, light precip",,,,Francis,Francis,,,
-2026,B01,,,,,,7/15/26,12:26,,,,FALSE,many small-med sun cups,"22.9,35.6,27.9",,,,,Francis,Francis,,,
-2026,B02,,,,,,7/15/26,12:43,,,,SE,moderate small sun cups,"20.3,20.3,26.7","low clouds,light precipitation",,,,Francis,Francis,,,
-2026,B03,,,,,,7/15/26,13:04,,,,W,many small sun cups,"20.3,21.6,22.9","low clouds, hot fog, light precip",,,,Francis,Francis,,,
-2026,G06,,,,6/12/26,12:26,7/15/26,13:31,,,,FALSE,deep sun cups,"35.6,35.6,34.3","low clouds, light precip",,,On crevasse,Francis,Francis,,,
-2026,G05,,,,6/12/26,12:50,7/15/26,13:40,,,,SW,"many deep, medium suncups","26.7,30.5,45.7","low clouds, light precip",,,,Francis,Francis,,,
-2026,G04,,,,6/12/26,13:35,7/15/26,14:00,,,,FALSE,many small - medium suncups,"48.3,25.4,48.3","low clouds, light precipitation",,,,Francis,Francis,,,
-2026,A02,,,,6/12/26,13:53,7/15/26,14:16,26,25.4,-0.6,SE,many medium suncups,"35.6,38.1,38.1","low clouds, light precipitation",,,Ablation stake and RM station were placed on 6/22/26 at 13:30,Francis,Francis,,,
-2026,A17,,,,6/24/26,13:00,7/19/26,12:32,23,105,82,W,"minor suncups, slight wind affect","69,88,83,36","sunny/clear, south winds light to med",,,,Francis,Francis,,,
-2026,G01,,,,6/12/26,14:39,7/22/26,17:23,,,,FALSE,many large suncups,"48,64,75","sunny and partly cloudy, some fog",,,,Francis,Francis,,,
-2026,G03,,,,6/12/26,14:09,7/22/26,17:39,,,,FALSE,many large suncups,"68,79,45","partly cloudy, sunshine, wind from north",,,,Francis,Francis,,,
-2026,G02,,,,6/12/26,14:24,7/22/26,17:34,,,,W,many large suncups,"60,68,62","partly cloudy, sunny, some fog",,,,Francis,Francis,,,
-2026,A03,,,,,,7/22/26,17:48,,,,FALSE,many small sun cups,"52,43,45","sunny cloudy, light wind from the north",,,,Francis,Francis,,,
-2026,A04,,,,6/17/26,17:35,7/22/26,17:59,9,49.5,40.5,FALSE,many medium suncups,"50,55,53","cloudy, partly sunny",,,Visited to check on and recalibrate RM compass on 6/22/26,Francis,Francis,,,
-2026,A05,,,,6/17/26,16:03,7/22/26,18:18,,,,FALSE,many small sun cups,"51,50,49","overcast,foggy",,,,Francis,Francis,,,
-2026,A06,,,,6/17/26,14:54,7/22/26,18:32,31,123.9,92.9,FALSE,some small suncups,"55,60,40","overcast, foggy",,,,Francis,Francis,,,
-2026,A10,,,,6/19/26,15:15,7/22/26,13:53,7.7,18,10.3,FALSE,"wet snow, poorly defined suncups",19,"foggy, moderate breeze",,,,"Jackson, Vijay",Vijay,,,
-2026,F03,,,,6/21/26,14:15,7/22/26,14:25,,,,FALSE,"wet snow, smooth snow surface",nan,foggy,,,,"Jackson, Vijay",Vijay,,,
-2026,A09,,,,6/19/26,15:32,7/22/26,14:55,,,,FALSE,"wet snow, some sun cups",30,foggy,,,,"Jackson, Vijay",Vijay,,,
-2026,A08,,,,6/19/26,16:30,7/22/26,15:11,5.8,51,45.2,SE,"wet snow, some sun cups",50,foggy,,,,"Jackson, Vijay",Vijay,,,
-2026,A07,,,,6/19/26,17:05,7/22/26,15:30,,,,FALSE,"wet snow, some sun cups",42,foggy,,,"Notes do not include pickup time, estimated","Jackson, Vijay",Vijay,,,
-2026,A16,,,,6/24/26,16:38,7/26/26,17:44,,,,FALSE,"wet snow, ice patches",nan,"low clouds, light rain",,,,Francis,Francis,,,
-2026,A15,,,,6/24/26,17:03,7/26/26,18:00,19,48.5,29.5,SW,"wet soft snow, no sun cups",nan,"low clouds, light rain",,,Maybe 17:00 AKT? Conflicts with subsequent record,Francis,Francis,,23,58.4
-2026,A14,,,,6/24/26,17:47,7/26/26,18:00,,,,FALSE,"wet, saturated snow, no sun cups",nan,low clouds,,,,Francis,Francis,,15,38.1
-2026,X06,,,,6/21/26,16:25,7/29/26,12:10,,,,FALSE,"wet, small rounds, slight wind affect",nan,"low clouds, some sunbreakds, light wind",,,,"Jackson, Owen",Owen,,15,38.1
-2026,X05,,,,6/21/26,17:30,7/29/26,12:36,,,,FALSE,"wet, midsize rounds",nan,"fog, some sun patches",,,,"Jackson, Owen",Owen,,,
-2026,A13,,,,6/21/26,18:56,7/29/26,12:57,30.1,88,57.9,SE,"wet rounds, wind(?, illegible) suncups ","23,39,15","fog, light to moderate winds",,,,"Jackson, Owen",Owen,,,
-2026,T09,,,,6/21/26,20:30,7/31/26,12:38,,,,NW,rock,nan,"medium elev, clouds and light rain",,,Tilted with slope angle of surface. On rocks below camp,Francis,Francis,,,
-2026,A12,,,,6/19/26,14:00,7/31/26,14:36,7,18.5,11.5,E,"wet snow, shallow sun cups","19,20,23","wlow clouds, light rain",,,Broken base. Station falled over to the east,Francis,Francis,,,
-2026,A11,,,,6/19/26,12:16,7/31/26,15:37,,,,FALSE,"shallow sun cups, wet snow","27,33,28","fog, light rain",,,,Francis,Francis,,,
-2026,T02,,,,,,7/25/26,11:00,,,,FALSE,"moist snow algae, many sun cups","39,25,42","partly cloudy, breezy",,,,Jackson,Jackson,,,
-2026,T06,,,,,,7/25/26,12:10,,,,S,blue ice,nan,"cloudy, breezy",,,,Jackson,Jackson,,,
-2026,T04,,,,,,7/25/26,12:40,,,,FALSE,"blue ice, slush, running water","60, 186, 96","partly cloudy, sunny, breezy",,,Running water (under site?),Jackson,Jackson,,,
-2026,T03,,,,,,7/25/26,14:18,,,,FALSE,blue ice,"72,112,42","sunny, partly cloudy",,,Unclear what suncup lengths refer to with blue ice surface?,Jackson,Jackson,,,
-2026,T05,,,,,,7/25/26,14:30,,,,NW,moraine debris,nan,partly cloudy,,,"fallen over, almost in a crevasse!",Jackson,Jackson,,,
-2026,T08,,,,,,7/25/26,12:10,,,,NW,blue ice and stream,nan,"mostly sunny, breezy",,,,Vijay,Vijay,,,
-2026,T07,,,,,,7/25/26,12:59,,,,W,n/a,nan,"mostly sunny, breezy",,,fallen over to the west,Vijay,Vijay,,,
-2026,F04,,,,6/21/26,14:00,7/28/26,18:25,,,,FALSE,wind blown snow,nan,sunny,,,,Greg,Greg,,,
-2026,A19,,,,6/24/26,14:24,8/4/26,12:45,,,,E,blue ice,nan,"sunny, scattered high clouds, light breeze",,,"fall over with 2/4 legs snapped off, pointed east",Francis,Francis,,,
-2026,A18,,,,6/24/26,15:22,8/4/26,13:32,25,135,110,NW,blue ice,nan,"sunny, scattered high clouds, light breeze",,,"fallen over, pointed north. Station/screws snapped off base plate. Ablation stake tilted, melted out(?)",Francis,Francis,,,
+﻿year,site,latitude,longitude,site_elevation,deploy_date,deploy_time,pickup_date,pickup_time,abl_initial_cm,abl_final_cm,height_change,base_titled,sfc_notes,sun_cup_long_ax_lens_cm,wx_notes,wind_dir_offset_deg,pickup_notes,notes,retrieved_by,photos_by,approx_elev
+2026,A01,58.60378198738002,-134.1797689,984,6/13/26,17:22,7/15/26,10:53,,,,FALSE,many medium suncups,"51,40.6,35.6",overcast,,,,Francis,Francis,TRUE
+2026,B06,58.642676574309846,-134.1604771,1173,6/23/26,16:25,7/15/26,11:31,,,,W,many shallow suncups ranging in size small-medium,"29.2,26.7,54.6",overcast/foggy,,,"Tilted with slope angle of surface, not sunk into snow",Francis,Francis,TRUE
+2026,B05,58.64190852542499,-134.1697718,1120,6/23/26,16:47,7/15/26,11:52,,,,FALSE,"many medium suncups, some algae","28,28.6,25.4","light precip, low clouds",,,,Francis,Francis,TRUE
+2026,B04,58.637801171341124,-134.182085,1104,6/23/26,18:28,7/15/26,12:14,,,,FALSE,many medium suncups,"35.6,35.6,28.0","low clouds, light precip",,,,Francis,Francis,TRUE
+2026,B01,58.64724527827597,-134.1848427,1067,6/23/26,17:47,7/15/26,12:26,,,,FALSE,many small-med sun cups,"22.9,35.6,27.9",,,,,Francis,Francis,TRUE
+2026,B02,58.64839067467605,-134.1875686,1073,6/23/26,18:11,7/15/26,12:43,,,,SE,moderate small sun cups,"20.3,20.3,26.7","low clouds,light precipitation",,,,Francis,Francis,TRUE
+2026,B03,58.64093440496724,-134.1957226,1088,6/23/26,18:40,7/15/26,13:04,,,,W,many small sun cups,"20.3,21.6,22.9","low clouds, hot fog, light precip",,,,Francis,Francis,TRUE
+2026,G06,58.62217612865622,-134.2632423,1128,6/12/26,12:26,7/15/26,13:31,,,,FALSE,deep sun cups,"35.6,35.6,34.3","low clouds, light precip",,,On crevasse,Francis,Francis,TRUE
+2026,G05,58.628164327283194,-134.2499002,1125,6/12/26,12:50,7/15/26,13:40,,,,SW,"many deep, medium suncups","26.7,30.5,45.7","low clouds, light precip",,,,Francis,Francis,TRUE
+2026,G04,58.631515121235864,-134.243021,1115,6/12/26,13:35,7/15/26,14:00,,,,FALSE,many small - medium suncups,"48.3,25.4,48.3","low clouds, light precipitation",,,,Francis,Francis,TRUE
+2026,A02,58.63433158,-134.2370207,1109,6/12/26,13:53,7/15/26,14:16,26,25.4,-0.6,SE,many medium suncups,"35.6,38.1,38.1","low clouds, light precipitation",,,Ablation stake and RM station were placed on 6/22/26 at 13:30,Francis,Francis,TRUE
+2026,A17,58.98167881845333,-134.0782259,1561,6/24/26,13:00,7/19/26,12:32,23,105,82,W,"minor suncups, slight wind affect","69,88,83,36","sunny/clear, south winds light to med",,,,Francis,Francis,TRUE
+2026,G01,58.650405425118244,-134.2107074,1110,6/12/26,14:39,7/22/26,17:23,,,,FALSE,many large suncups,"48,64,75","sunny and partly cloudy, some fog",,,,Francis,Francis,TRUE
+2026,G03,58.63766116125864,-134.2308711,1110,6/12/26,14:09,7/22/26,17:39,,,,FALSE,many large suncups,"68,79,45","partly cloudy, sunshine, wind from north",,,,Francis,Francis,TRUE
+2026,G02,58.641968039180995,-134.2226762,1110,6/12/26,14:24,7/22/26,17:34,,,,W,many large suncups,"60,68,62","partly cloudy, sunny, some fog",,,,Francis,Francis,TRUE
+2026,A03,58.656475452489836,-134.2777601,1197,6/22/26,14:10,7/22/26,17:48,,,,FALSE,many small sun cups,"52,43,45","sunny cloudy, light wind from the north",,,,Francis,Francis,TRUE
+2026,A04,58.66965942448515,-134.3062928,1237,6/17/26,17:35,7/22/26,17:59,9,49.5,40.5,FALSE,many medium suncups,"50,55,53","cloudy, partly sunny",,,Visited to check on and recalibrate RM compass on 6/22/26,Francis,Francis,TRUE
+2026,A05,58.69180425936393,-134.2604734,1301,6/17/26,16:03,7/22/26,18:18,,,,FALSE,many small sun cups,"51,50,49","overcast,foggy",,,,Francis,Francis,TRUE
+2026,A06,58.71795581511836,-134.2121781,1406,6/17/26,14:54,7/22/26,18:32,31,123.9,92.9,FALSE,some small suncups,"55,60,40","overcast, foggy",,,,Francis,Francis,TRUE
+2026,A10,58.81494075043849,-134.1821369,1764,6/19/26,15:15,7/22/26,13:53,7.7,18,10.3,FALSE,"wet snow, poorly defined suncups",19,"foggy, moderate breeze",,,,"Jackson, Vijay",Vijay,TRUE
+2026,F03,58.813637607410385,-134.1629956,1798,6/21/26,14:15,7/22/26,14:25,,,,FALSE,"wet snow, smooth snow surface",nan,foggy,,,,"Jackson, Vijay",Vijay,TRUE
+2026,A09,58.79001899418808,-134.1918256,1670,6/19/26,15:32,7/22/26,14:55,,,,FALSE,"wet snow, some sun cups",30,foggy,,,,"Jackson, Vijay",Vijay,TRUE
+2026,A08,58.76946752593566,-134.1942701,1545,6/19/26,16:30,7/22/26,15:11,5.8,51,45.2,SE,"wet snow, some sun cups",50,foggy,,,,"Jackson, Vijay",Vijay,TRUE
+2026,A07,58.74522121105697,-134.1974531,1471,6/19/26,17:05,7/22/26,15:30,,,,FALSE,"wet snow, some sun cups",42,foggy,,,"Notes do not include pickup time, estimated","Jackson, Vijay",Vijay,TRUE
+2026,A16,58.952010128120065,-134.0875755,1653,6/24/26,16:38,7/26/26,17:44,,,,FALSE,"wet snow, ice patches",nan,"low clouds, light rain",,,,Francis,Francis,TRUE
+2026,A15,58.93606896808881,-134.099813,1703,6/24/26,17:03,7/26/26,18:00,19,48.5,29.5,SW,"wet soft snow, no sun cups",nan,"low clouds, light rain",,,Maybe 17:00 AKT? Conflicts with subsequent record,Francis,Francis,TRUE
+2026,A14,58.90973715670847,-134.107433,1769,6/24/26,17:47,7/26/26,18:00,,,,FALSE,"wet, saturated snow, no sun cups",nan,low clouds,,,,Francis,Francis,TRUE
+2026,X06,58.947751450706264,-134.3236248,2086,6/21/26,16:25,7/29/26,12:10,,,,FALSE,"wet, small rounds, slight wind affect",nan,"low clouds, some sunbreakds, light wind",,,,"Jackson, Owen",Owen,TRUE
+2026,X05,58.90793231963343,-134.2178882,1940,6/21/26,17:30,7/29/26,12:36,,,,FALSE,"wet, midsize rounds",nan,"fog, some sun patches",,,,"Jackson, Owen",Owen,TRUE
+2026,A13,58.88270150186473,-134.1354793,1827,6/21/26,18:56,7/29/26,12:57,30.1,88,57.9,SE,"wet rounds, wind(?, illegible) suncups ","23,39,15","fog, light to moderate winds",,,,"Jackson, Owen",Owen,TRUE
+2026,T09,58.83517888,-134.2785199,1675,6/21/26,20:30,7/31/26,12:38,,,,NW,rock,nan,"medium elev, clouds and light rain",,,Tilted with slope angle of surface. On rocks below camp,Francis,Francis,TRUE
+2026,A12,58.85856427389704,-134.1575876,1859,6/19/26,14:00,7/31/26,14:36,7,18.5,11.5,E,"wet snow, shallow sun cups","19,20,23","wlow clouds, light rain",,,Broken base. Station falled over to the east,Francis,Francis,TRUE
+2026,A11,58.83766250192577,-134.1669921,1828,6/19/26,12:16,7/31/26,15:37,,,,FALSE,"shallow sun cups, wet snow","27,33,28","fog, light rain",,,,Francis,Francis,TRUE
+2026,T02,58.82822,-134.31925,975,6/15/26,10:04,7/25/26,11:00,,,,FALSE,"moist snow algae, many sun cups","39,25,42","partly cloudy, breezy",,,,Jackson,Jackson,TRUE
+2026,T06,58.83003,-134.31188,1009,6/15/26,10:04,7/25/26,12:10,,,,S,blue ice,nan,"cloudy, breezy",,,,Jackson,Jackson,TRUE
+2026,T04,58.83173473333333,-134.3044998,1030,6/15/26,10:52,7/25/26,12:40,,,,FALSE,"blue ice, slush, running water","60, 186, 96","partly cloudy, sunny, breezy",,,Running water (under site?),Jackson,Jackson,TRUE
+2026,T03,58.825554162841314,-134.3196653,969,6/14/26,13:23,7/25/26,14:18,,,,FALSE,blue ice,"72,112,42","sunny, partly cloudy",,,Unclear what suncup lengths refer to with blue ice surface?,Jackson,Jackson,TRUE
+2026,T05,58.824179599999994,-134.3178614,975,6/14/26,11:58,7/25/26,14:30,,,,NW,moraine debris,nan,partly cloudy,,,"fallen over, almost in a crevasse!",Jackson,Jackson,TRUE
+2026,T08,58.83004986666667,-134.3302546,945,6/13/26,20:13,7/25/26,12:10,,,,NW,blue ice and stream,nan,"mostly sunny, breezy",,,,Vijay,Vijay,TRUE
+2026,T07,58.83229,-134.3391,923,6/13/26,18:19,7/25/26,12:59,,,,W,n/a,nan,"mostly sunny, breezy",,,fallen over to the west,Vijay,Vijay,TRUE
+2026,F04,58.806667932762615,-134.1415621,1979,6/21/26,14:00,7/28/26,18:25,,,,FALSE,wind blown snow,nan,sunny,,,,Greg,Greg,TRUE
+2026,A19,59.030848543408176,-134.0889524,1348,6/24/26,14:24,8/4/26,12:45,,,,E,blue ice,nan,"sunny, scattered high clouds, light breeze",,,"fall over with 2/4 legs snapped off, pointed east",Francis,Francis,TRUE
+2026,A18,59.018705335785114,-134.0858758,1395,6/24/26,15:22,8/4/26,13:32,25,135,110,NW,blue ice,nan,"sunny, scattered high clouds, light breeze",,,"fallen over, pointed north. Station/screws snapped off base plate. Ablation stake tilted, melted out(?)",Francis,Francis,TRUE
