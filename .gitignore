@@ -3,6 +3,7 @@ data/external/*.tif
 *.tif
 data/external/*/**
 **/scratch
+figs/temp/
 docker/
 docs/
 api_keys.py
