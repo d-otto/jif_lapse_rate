@@ -29,7 +29,7 @@ def test_metadata_parsing():
         
         # Test clean_hobo_pendants
         try:
-            clean_hobo_pendants(test_file, temp_path)
+            clean_hobo_pendants(test_file, temp_path, year=2025)
             print("✓ clean_hobo_pendants completed successfully")
             
             # Check the output file

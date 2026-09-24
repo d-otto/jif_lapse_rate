@@ -35,7 +35,7 @@ def test_new_structure():
         
         # Step 1: Convert CSV to NetCDF
         try:
-            clean_hobo_pendants(existing_files, temp_path)
+            clean_hobo_pendants(existing_files, temp_path, year=2025)
             print("✓ clean_hobo_pendants completed successfully")
             
             output_files = list(temp_path.glob('*.nc'))

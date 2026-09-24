@@ -35,7 +35,7 @@ def test_multiple_files():
         
         # Test clean_hobo_pendants on all files
         try:
-            clean_hobo_pendants(existing_files, temp_path)
+            clean_hobo_pendants(existing_files, temp_path, year=2025)
             print("✓ clean_hobo_pendants completed successfully for all files")
             
             # Check output files

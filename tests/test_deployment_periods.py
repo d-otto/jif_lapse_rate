@@ -19,10 +19,10 @@ from jiflr.utils import get_deployment_periods, deployment_mask, apply_deploymen
 
 
 def _make_dataset(dates):
-    """Helper: create a minimal xr.Dataset with a datetime coordinate."""
+    """Helper: create a minimal xr.Dataset with a datetime_utc coordinate."""
     return xr.Dataset(
-        {"temp_c": (["datetime"], np.random.randn(len(dates)))},
-        coords={"datetime": dates},
+        {"temp_c": (["datetime_utc"], np.random.randn(len(dates)))},
+        coords={"datetime_utc": dates},
     )
 
 
@@ -39,17 +39,17 @@ def test_get_deployment_periods():
         return True
 
     # Single site
-    periods = get_deployment_periods("A01", csv_path)
+    periods = get_deployment_periods("A01", csv_path, 2025)
     assert isinstance(periods, dict), "Expected dict"
     assert "A01" in periods, "A01 not found in results"
     print(f"A01 has {len(periods['A01'])} deployment periods")
 
     # Multiple sites
-    multi = get_deployment_periods(["A01", "B02"], csv_path)
+    multi = get_deployment_periods(["A01", "B02"], csv_path, 2025)
     assert "A01" in multi and "B02" in multi
 
     # Non-existent site returns empty list
-    fake = get_deployment_periods("FAKE01", csv_path)
+    fake = get_deployment_periods("FAKE01", csv_path, 2025)
     assert fake.get("FAKE01", []) == []
 
     print("[PASS] get_deployment_periods() tests passed!")
@@ -73,17 +73,17 @@ def test_deployment_mask():
 
     # deployment_mask raises on missing site
     try:
-        deployment_mask(ds, "FAKE_SITE_XYZ", csv_path, ignore_missing=False)
+        deployment_mask(ds, "FAKE_SITE_XYZ", csv_path, 2025, ignore_missing=False)
         raise AssertionError("Should have raised ValueError")
     except ValueError:
         pass
 
     # ignore_missing returns all-True
-    mask = deployment_mask(ds, "FAKE_SITE_XYZ", csv_path, ignore_missing=True)
+    mask = deployment_mask(ds, "FAKE_SITE_XYZ", csv_path, 2025, ignore_missing=True)
     assert mask.all(), "ignore_missing should return all-True mask"
 
     # Real site produces a valid boolean array
-    mask = deployment_mask(ds, "A01", csv_path, ignore_missing=True)
+    mask = deployment_mask(ds, "A01", csv_path, 2025, ignore_missing=True)
     assert isinstance(mask, np.ndarray)
     assert mask.dtype == bool
     assert mask.shape == (len(dates),)
@@ -109,18 +109,18 @@ def test_apply_deployment_mask():
 
     # ignore_missing=False raises on missing site
     try:
-        apply_deployment_mask(ds, "FAKE_SITE_XYZ", csv_path, ignore_missing=False)
+        apply_deployment_mask(ds, "FAKE_SITE_XYZ", csv_path, 2025, ignore_missing=False)
         raise AssertionError("Should have raised ValueError")
     except ValueError:
         pass
 
     # ignore_missing=True returns dataset unchanged
-    ds_out = apply_deployment_mask(ds, "FAKE_SITE_XYZ", csv_path, ignore_missing=True)
+    ds_out = apply_deployment_mask(ds, "FAKE_SITE_XYZ", csv_path, 2025, ignore_missing=True)
     assert isinstance(ds_out, xr.Dataset)
 
     # Real site: out-of-deployment values become NaN
-    mask = deployment_mask(ds, "A01", csv_path, ignore_missing=True)
-    ds_masked = apply_deployment_mask(ds, "A01", csv_path, ignore_missing=True)
+    mask = deployment_mask(ds, "A01", csv_path, 2025, ignore_missing=True)
+    ds_masked = apply_deployment_mask(ds, "A01", csv_path, 2025, ignore_missing=True)
     temp_out = ds_masked["temp_c"].values
     n_nan = np.isnan(temp_out).sum()
     n_non_deployed = (~mask).sum()

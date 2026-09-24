@@ -33,7 +33,7 @@ for f in pace_files:
 print(f"\nTesting all files:")
 
 try:
-    clean_pace_loggers(pace_files, output_dir, convert_to_local_tz=False)
+    clean_pace_loggers(pace_files, output_dir, convert_to_local_tz=False, year=2025)
     print("✓ Successfully processed all Pace logger files!")
     
     # List output files
