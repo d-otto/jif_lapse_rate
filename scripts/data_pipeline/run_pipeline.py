@@ -2,15 +2,16 @@
 """
 Simple script to run the complete JIFLR data processing pipeline.
 
-This script executes six seasonal steps and, optionally, a seventh all-years
+This script executes seven seasonal steps and, optionally, an eighth all-years
 merge step:
 1. Clean raw Pace data
-2. Clean raw pendant data
-3. Merge pendant data by site
-4. Combine Pace and pendant data
-5. Merge site data to lvl0
-6. Process lvl0 to lvl1
-7. Merge selected seasonal lvl1 datasets into all-years products
+2. Clean raw RM Young data
+3. Clean raw pendant data
+4. Merge pendant data by site
+5. Combine Pace, RM Young, and pendant data
+6. Merge site data to lvl0
+7. Process lvl0 to lvl1
+8. Merge selected seasonal lvl1 datasets into all-years products
 
 Usage:
     python scripts/data_pipeline/run_pipeline.py
@@ -39,13 +40,15 @@ LOG_FILE = SCRIPT_DIR / "pipeline.log"
 # Define pipeline steps
 STEPS = [
     (1, "01_clean_raw_pace.py", "Clean raw Pace data"),
-    (2, "02_clean_raw_pendants.py", "Clean raw pendant data"),
-    (3, "03_merge_raw_pendants_by_site.py", "Merge pendant data by site"),
-    (4, "04_add_pendants_to_intensive.py", "Add pendants to intensive sites"),
-    (5, "05_merge_intermediate_to_lvl0.py", "Merge intermediate to lvl0"),
-    (6, "06_lvl0_to_lvl1.py", "Process lvl0 to lvl1"),
-    (7, "07_merge_lvl1_all_years.py", "Merge Level 1 data across years"),
+    (2, "02_clean_raw_rmyoung.py", "Clean raw RM Young data"),
+    (3, "03_clean_raw_pendants.py", "Clean raw pendant data"),
+    (4, "04_merge_raw_pendants_by_site.py", "Merge pendant data by site"),
+    (5, "05_add_pendants_to_intensive.py", "Add pendant and logger data to intensive sites"),
+    (6, "06_merge_intermediate_to_lvl0.py", "Merge intermediate to lvl0"),
+    (7, "07_lvl0_to_lvl1.py", "Process lvl0 to lvl1"),
+    (8, "08_merge_lvl1_all_years.py", "Merge Level 1 data across years"),
 ]
+STEP_NUMBERS = tuple(step_num for step_num, *_ in STEPS)
 
 
 def run_step(step_num, script_name, description, total_steps, logger, env, year, all_years):
@@ -57,7 +60,7 @@ def run_step(step_num, script_name, description, total_steps, logger, env, year,
     logger.info(key_value("Script", str(script_path)))
 
     try:
-        if script_name == "07_merge_lvl1_all_years.py":
+        if script_name == "08_merge_lvl1_all_years.py":
             command = [sys.executable, str(script_path), "--years", *(str(value) for value in all_years)]
         else:
             command = [sys.executable, str(script_path), "--year", str(year)]
@@ -82,9 +85,18 @@ def main():
         "--all-years",
         type=int,
         nargs="+",
-        help="Run step 07 after seasonal processing, merging these Level 1 years",
+        help="Run step 08 after seasonal processing, merging these Level 1 years",
+    )
+    parser.add_argument(
+        "--from-step",
+        type=int,
+        choices=STEP_NUMBERS,
+        default=STEP_NUMBERS[0],
+        help="First pipeline step to run (default: 1)",
     )
     args = parser.parse_args()
+    if args.from_step == 8 and not args.all_years:
+        parser.error("--from-step 8 requires --all-years")
     total_steps = len(STEPS)
 
     # Initialize logging with overwrite mode (fresh start)
@@ -103,7 +115,9 @@ def main():
     # Run each step
     all_success = True
     for step_num, script_name, description in STEPS:
-        if script_name == "07_merge_lvl1_all_years.py" and not args.all_years:
+        if step_num < args.from_step:
+            continue
+        if script_name == "08_merge_lvl1_all_years.py" and not args.all_years:
             continue
         success = run_step(
             step_num, script_name, description, total_steps, logger, env,

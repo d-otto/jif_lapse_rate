@@ -9,6 +9,7 @@ Created: 2025-01-20
 Project: jif_lapse_rate
 """
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -22,9 +23,176 @@ import warnings
 from zoneinfo import ZoneInfo
 
 from jiflr import ROOT
+from jiflr.deployment_manifest import (
+    DeploymentManifest,
+    apply_record_deployment_mask,
+    apply_record_metadata,
+    load_deployment_manifest,
+)
+from jiflr.netcdf_metadata import (
+    MEASUREMENT_ATTRS,
+    WIND_SPEED_MAX_METHODS,
+    apply_product_metadata,
+)
 
 # Module-level logger for pipeline operations
 _logger = logging.getLogger("jiflr.pipeline")
+
+PACE_WIND_SPEED_MAX_METHOD = WIND_SPEED_MAX_METHODS["pace"][1]
+RM_YOUNG_WIND_SPEED_MAX_METHOD = WIND_SPEED_MAX_METHODS["rmyoung"][1]
+NETCDF_COMPRESSION_LEVEL = 5
+NETCDF_TIME_CHUNK_SIZE = 4096
+
+
+@dataclass(frozen=True)
+class NoiseQCSpec:
+    """Settings for one group of measurements sharing a noise QC rule."""
+
+    name: str
+    variables: tuple[str, ...]
+    flag_bit: int
+    absolute_floor: float
+    floor_unit: str
+    window: str
+    min_periods: int
+    mad_multiplier: float
+    sensor_type_prefixes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.variables or not self.floor_unit:
+            raise ValueError("Noise QC requires a name, variables, and a floor unit")
+        if not 0 < self.flag_bit <= np.iinfo(np.uint32).max or self.flag_bit & (self.flag_bit - 1):
+            raise ValueError("Noise QC flag_bit must be one uint32 bit")
+        if pd.Timedelta(self.window) <= pd.Timedelta(0):
+            raise ValueError("Noise QC window must be a positive time duration")
+        if self.min_periods < 1 or self.mad_multiplier <= 0 or self.absolute_floor <= 0:
+            raise ValueError("Noise QC periods, multiplier, and floor must be positive")
+
+
+def rolling_hampel_candidates(
+    series: pd.Series,
+    *,
+    window: str,
+    min_periods: int,
+    mad_multiplier: float,
+    absolute_floor: float,
+) -> pd.Series:
+    """Find outliers using a centered, time-based rolling median and MAD."""
+    if not isinstance(series.index, pd.DatetimeIndex):
+        raise TypeError("Noise QC requires a DatetimeIndex")
+    if not series.index.is_monotonic_increasing:
+        raise ValueError("Noise QC requires timestamps sorted in ascending order")
+    if min_periods < 1:
+        raise ValueError("min_periods must be at least one")
+    if mad_multiplier <= 0 or absolute_floor <= 0:
+        raise ValueError("mad_multiplier and absolute_floor must be positive")
+
+    baseline = series.rolling(window, center=True, min_periods=min_periods).median()
+    residual = (series - baseline).abs()
+    mad = residual.rolling(window, center=True, min_periods=min_periods).median()
+    threshold = np.maximum(absolute_floor, mad_multiplier * 1.4826 * mad)
+    return series.notna() & baseline.notna() & (residual > threshold)
+
+
+def apply_noise_qc(ds: xr.Dataset, *, spec: NoiseQCSpec) -> tuple[xr.Dataset, int]:
+    """Flag raw observations selected by a noise rule without changing values."""
+    variables = [name for name in spec.variables if name in ds.data_vars]
+    if not variables:
+        return ds, 0
+    if spec.sensor_type_prefixes and "sensor_type" not in ds.coords:
+        raise ValueError("Noise QC sensor selection requires a sensor_type coordinate")
+
+    time_index = pd.DatetimeIndex(ds["datetime_utc"].values)
+    if not time_index.is_monotonic_increasing:
+        raise ValueError("Noise QC requires sorted datetime_utc values")
+
+    affected = 0
+    sensor_type_prefixes = tuple(value.casefold() for value in spec.sensor_type_prefixes)
+    for variable in variables:
+        flag_name = f"{variable}_qc_flag"
+        if flag_name not in ds:
+            raise ValueError(f"Noise QC requires {flag_name}")
+        for sensor_idx in ds["sensor_idx"].values:
+            if sensor_type_prefixes:
+                sensor_type = str(ds["sensor_type"].sel(sensor_idx=sensor_idx).item())
+                if not sensor_type.casefold().startswith(sensor_type_prefixes):
+                    continue
+            values = ds[variable].sel(sensor_idx=sensor_idx)
+            if not values.notnull().any():
+                continue
+            series = pd.Series(values.values, index=time_index)
+            candidates = rolling_hampel_candidates(
+                series,
+                window=spec.window,
+                min_periods=spec.min_periods,
+                mad_multiplier=spec.mad_multiplier,
+                absolute_floor=spec.absolute_floor,
+            )
+            affected += int(candidates.sum())
+            mask = xr.DataArray(
+                candidates.to_numpy(),
+                dims=("datetime_utc",),
+                coords={"datetime_utc": ds["datetime_utc"]},
+            )
+            ds[flag_name].loc[dict(sensor_idx=sensor_idx)] = (
+                ds[flag_name].sel(sensor_idx=sensor_idx)
+                | xr.where(mask, np.uint32(spec.flag_bit), np.uint32(0))
+            )
+
+    prefix = f"{spec.name}_qc"
+    ds.attrs.update(
+        {
+            f"{prefix}_method": "centered_rolling_median_hampel",
+            f"{prefix}_rolling_window": spec.window,
+            f"{prefix}_min_periods": spec.min_periods,
+            f"{prefix}_mad_multiplier": spec.mad_multiplier,
+            f"{prefix}_absolute_floor_{spec.floor_unit}": spec.absolute_floor,
+        }
+    )
+    return ds, affected
+
+
+def create_netcdf_encoding(dataset: xr.Dataset) -> dict[str, dict[str, object]]:
+    """Return lossless NetCDF encoding for Level-product datasets.
+
+    Level products use ``sensor_idx × datetime_utc`` arrays that are often
+    sparse.  Sensor-oriented chunks preserve efficient single-sensor reads,
+    while gzip and shuffle make fill-value-heavy chunks compact on disk.
+    String coordinates use NetCDF character arrays so that values introduced
+    during a merge are not truncated by a stale string-width encoding inherited
+    from an input file.
+    """
+    if "sensor_idx" not in dataset.sizes or "datetime_utc" not in dataset.sizes:
+        raise ValueError(
+            "Compressed Level NetCDF output requires sensor_idx and datetime_utc dimensions"
+        )
+
+    n_sensors = dataset.sizes["sensor_idx"]
+    n_times = dataset.sizes["datetime_utc"]
+    if n_sensors == 0 or n_times == 0:
+        raise ValueError(
+            "Compressed Level NetCDF output requires non-empty sensor_idx and datetime_utc dimensions"
+        )
+
+    chunksizes = (1, min(NETCDF_TIME_CHUNK_SIZE, n_times))
+    encoding = {
+        name: {
+            "zlib": True,
+            "complevel": NETCDF_COMPRESSION_LEVEL,
+            "shuffle": True,
+            "chunksizes": chunksizes,
+        }
+        for name, variable in dataset.variables.items()
+        if variable.dims == ("sensor_idx", "datetime_utc")
+    }
+    encoding.update(
+        {
+            name: {"dtype": "S1"}
+            for name, variable in dataset.coords.items()
+            if variable.dtype.kind in {"U", "S"}
+        }
+    )
+    return encoding
 
 
 @dataclass(frozen=True)
@@ -49,6 +217,10 @@ class MetadataPaths:
     @property
     def data_inventory(self) -> Path:
         return self.directory / "data_inventory.xlsx"
+
+    @property
+    def deployment_manifest(self) -> Path:
+        return self.directory / "deployment_manifest.csv"
 
 
 def read_season_metadata(path: Path, year: int, *, source_name: str) -> pd.DataFrame:
@@ -473,11 +645,19 @@ def _populate_spatial_metadata(
     return ds
 
 
+def _file_checksum(path: Path) -> str:
+    """Return the SHA-256 checksum of a raw export without loading it all at once."""
+    digest = hashlib.sha256()
+    with path.open("rb") as raw_export:
+        for chunk in iter(lambda: raw_export.read(64 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def clean_hobo_pendants(
     ps: list[Path] | Path,
     dir_out: Path,
-    data_inventory_path: Optional[Path] = None,
-    deployment_metadata_path: Optional[Path] = None,
+    manifest_path: Optional[Path] = None,
     year: Optional[int] = None,
 ):
     """
@@ -489,10 +669,10 @@ def clean_hobo_pendants(
         Path or list of paths to CSV files exported from HOBOware/HOBOconnect
     dir_out : Path
         Output directory for NetCDF files
-    data_inventory_path : Path, optional
-        Path to data inventory Excel file containing shielding information
-    deployment_metadata_path : Path, optional
-        Path to deployment_periods.csv file containing site elevations, coordinates
+    manifest_path : Path, optional
+        Path to the per-season deployment manifest. Raw files whose serial is
+        absent from this manifest are retained with explicit ``unknown``
+        metadata rather than being discarded or coerced to shielded.
     """
 
     if year is None:
@@ -502,80 +682,22 @@ def clean_hobo_pendants(
     if isinstance(ps, list) is False:
         ps = [ps]
 
-    # Load sensor metadata from data inventory (site_id, height, shielding)
-    sensor_metadata = {}
-    if data_inventory_path and data_inventory_path.exists():
-        try:
-            inventory_df = read_season_metadata(
-                data_inventory_path, year, source_name="data inventory"
-            )
+    manifest = load_deployment_manifest(manifest_path) if manifest_path else None
 
-            # Melt the inventory to make it tidy - each sensor gets its own row
-            sn_columns = [col for col in inventory_df.columns if "SN" in col]
-
-            # Also look for height-based sensor columns (current data inventory format)
-            height_based_cols = [
-                col
-                for col in inventory_df.columns
-                if col in ["2m_unshielded", "2m", "1m", "0m_unshielded"]
-            ]
-
-            # Combine all sensor columns
-            all_sensor_cols = sn_columns + height_based_cols
-
-            if all_sensor_cols and "site_id" in inventory_df.columns:
-                id_vars = ["site_id"]
-
-                # Melt all sensor columns
-                melted = inventory_df.melt(
-                    id_vars=id_vars,
-                    value_vars=all_sensor_cols,
-                    var_name="sensor_type",
-                    value_name="sensor_id",
-                )
-
-                # Remove rows with missing sensor IDs
-                melted = melted.dropna(subset=["sensor_id"])
-                melted["sensor_id"] = melted["sensor_id"].astype(int).astype(str)
-
-                # Extract full metadata for each sensor
-                for _, row in melted.iterrows():
-                    sensor_id = row["sensor_id"]
-                    sensor_type = row[
-                        "sensor_type"
-                    ]  # e.g., "2m", "1m", "2m_unshielded"
-                    site_id = row["site_id"]
-
-                    # Standardize site_id to Title Case (e.g., "windward2" -> "Windward2")
-                    site_id = str(site_id).title()
-
-                    # Extract height from column name (remove _unshielded suffix)
-                    height = sensor_type.replace("_unshielded", "")
-
-                    # Determine shielding status
-                    shielding = (
-                        "unshielded" if "unshielded" in sensor_type else "shielded"
-                    )
-
-                    sensor_metadata[sensor_id] = {
-                        "site_id": site_id,
-                        "height": height,
-                        "shielding": shielding,
-                    }
-
-                duplicate_sensor_ids = melted["sensor_id"].duplicated(keep=False)
-                if duplicate_sensor_ids.any():
-                    duplicate_ids = sorted(melted.loc[duplicate_sensor_ids, "sensor_id"].unique())
-                    raise ValueError(
-                        f"Data inventory assigns sensor IDs more than once in year {year}: "
-                        f"{duplicate_ids}"
-                    )
-
-        except Exception as e:
-            warnings.warn(f"Could not load data inventory: {e}")
-            raise
+    raw_exports_by_checksum: dict[str, Path] = {}
 
     for p in tqdm(ps):
+        checksum = _file_checksum(p)
+        original_export = raw_exports_by_checksum.get(checksum)
+        if original_export is not None:
+            _logger.warning(
+                "Skipping duplicate HOBO export %s; it is identical to %s",
+                p,
+                original_export,
+            )
+            continue
+        raw_exports_by_checksum[checksum] = p
+
         # First read: extract metadata from plot title
         df_meta = pd.read_csv(p, nrows=1)
 
@@ -586,7 +708,7 @@ def clean_hobo_pendants(
 
         filename_parts = p.name.split(" ")
         if len(filename_parts) >= 2:
-            # Check if first part looks like a site name (e.g., A01, B03, G03a, Lee1, Lee2, Divide, Windward1)
+            # Check if first part looks like a site name (e.g., A01, B03, G03, Lee1, Lee2, Divide, Windward1)
             if (
                 re.match(r"^[A-Z]\d+[a-z]?$", filename_parts[0])
                 or re.match(r"^[A-Z]+\d*$", filename_parts[0])
@@ -748,6 +870,13 @@ def clean_hobo_pendants(
             df_clean["datetime"], format="%m/%d/%y %H:%M:%S"
         )
 
+        if tz is None:
+            raise ValueError(
+                f"Could not determine the logger timezone from {p.name!r}. "
+                "Expected a filename suffix such as '(Data AKDT)'. "
+                "Rename the export to include its logger timezone before processing it."
+            )
+
         # Localize to the timezone, convert to UTC, then remove timezone info
         df_clean["datetime_utc"] = (
             df_clean["datetime"]
@@ -759,16 +888,22 @@ def clean_hobo_pendants(
         # Convert to xarray Dataset using sensor_idx structure
         ds = xr.Dataset.from_dataframe(df_clean.set_index("datetime_utc"))
 
-        # Look up metadata from inventory (preferred source)
-        if sn in sensor_metadata:
-            inv_meta = sensor_metadata[sn]
-            site_name = inv_meta["site_id"]
-            sensor_height = inv_meta["height"]
-            shielding_status = inv_meta["shielding"]
+        # Prefer the manifest. Unknown serials remain processable and must not
+        # inherit a false shielding classification from filename fallbacks.
+        record = manifest.lookup(sn) if manifest else None
+        if record is not None:
+            site_name = record.site_id
+            sensor_height = record.height
+            shielding_status = record.shielding or "unknown"
         else:
-            # Fall back to filename parsing values (already extracted above)
-            # site_name and sensor_height already set from filename parsing
-            shielding_status = "shielded"  # Default when not in inventory
+            shielding_status = (
+                "unshielded" if sensor_config == "unshielded" else "unknown"
+            )
+            if manifest is not None:
+                warnings.warn(
+                    f"Logger serial {sn} from {p.name} is not in the deployment manifest; "
+                    "keeping it with filename-derived metadata."
+                )
 
         # Create sensor_idx dimension (single sensor = index 0)
         sensor_idx = 0
@@ -788,7 +923,7 @@ def clean_hobo_pendants(
                 "datetime_utc": ds.datetime_utc,
                 # Sensor attributes as coordinates indexed by sensor_idx
                 "sensor_id": ("sensor_idx", [sn]),
-                "site_id": ("sensor_idx", [site_name if site_name else ""]),
+                "site_id": ("sensor_idx", [site_name if site_name else "Unknown"]),
                 "year": ("sensor_idx", [year]),
                 "height": (
                     "sensor_idx",
@@ -846,9 +981,10 @@ def clean_hobo_pendants(
         start_time = df_clean["datetime_utc"].iloc[0]
         end_time = df_clean["datetime_utc"].iloc[-1]
 
-        # Populate spatial metadata if deployment metadata is provided
-        if deployment_metadata_path and deployment_metadata_path.exists():
-            ds = _populate_spatial_metadata(ds, deployment_metadata_path, year)
+        if record is not None:
+            ds = apply_record_metadata(ds, record)
+        else:
+            ds.attrs["deployment_metadata_source"] = "filename"
 
         fname = f"{sn}_{start_time.strftime('%Y%m%dT%H%M')}_{end_time.strftime('%Y%m%dT%H%M')}.nc"
         pout = dir_out / fname
@@ -862,7 +998,7 @@ def clean_pace_loggers(
     dir_out: Path,
     convert_to_local_tz: bool = False,
     utc_offset_hours: float = -9.0,
-    deployment_metadata_path: Optional[Path] = None,
+    manifest_path: Optional[Path] = None,
     year: Optional[int] = None,
 ):
     """
@@ -878,8 +1014,8 @@ def clean_pace_loggers(
         If True, convert from UTC storage to local timezone (default: False)
     utc_offset_hours : float, optional
         UTC offset in hours for local timezone conversion (default: -9.0 for AKST)
-    deployment_metadata_path : Path, optional
-        Path to deployment_periods.csv file containing site elevations, coordinates
+    manifest_path : Path, optional
+        Path to the per-season deployment manifest.
 
     Notes
     -----
@@ -903,6 +1039,7 @@ def clean_pace_loggers(
 
     if year is None:
         raise ValueError("year is required when cleaning Pace logger data")
+    manifest = load_deployment_manifest(manifest_path) if manifest_path else None
 
     # Ensure file_paths is always a list
     if isinstance(file_paths, Path):
@@ -914,7 +1051,7 @@ def clean_pace_loggers(
             dir_out,
             convert_to_local_tz,
             utc_offset_hours,
-            deployment_metadata_path,
+            manifest,
             year,
         )
 
@@ -973,6 +1110,12 @@ def merge_lvl1_all_years(years: List[int], data_root: Path = ROOT / "data") -> L
         )
         category = filename.removeprefix("lvl1_").removesuffix(".nc")
         output_path = output_dir / f"lvl1_{category}_all_years.nc"
+        combined = apply_product_metadata(
+            combined,
+            level="lvl1",
+            product=category,
+            source_years=tuple(year for year, _ in season_paths),
+        )
         combined.to_netcdf(output_path)
         output_paths.append(output_path)
 
@@ -1141,7 +1284,7 @@ def _clean_pace_column_names(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         elif "WindSpd" in col and "Avg" in col:
             column_mapping[col] = "wind_speed_avg"
         elif "WindSpd" in col and "Peak" in col:
-            column_mapping[col] = "wind_speed_peak"
+            column_mapping[col] = "wind_speed_max"
         elif "Ta_" in col and "cm_c" in col:
             # Extract height from temperature column name
             height_match = re.search(r"Ta_(\d+)cm_c", col)
@@ -1338,60 +1481,11 @@ def _add_pace_attributes(ds: xr.Dataset, metadata: dict):
         }
     )
 
-    # Variable-specific attributes
-    if "temp_c" in ds.data_vars:
-        ds["temp_c"].attrs.update(
-            {
-                "units": "degrees_Celsius",
-                "long_name": "Air temperature",
-                "standard_name": "air_temperature",
-            }
-        )
-
-    if "wind_direction" in ds.data_vars:
-        ds["wind_direction"].attrs.update(
-            {
-                "units": "degrees",
-                "long_name": "Wind direction",
-                "standard_name": "wind_from_direction",
-            }
-        )
-
-    if "pressure" in ds.data_vars:
-        ds["pressure"].attrs.update(
-            {
-                "units": "kPa",
-                "long_name": "Atmospheric pressure",
-                "standard_name": "air_pressure",
-            }
-        )
-
-    if "relative_humidity" in ds.data_vars:
-        ds["relative_humidity"].attrs.update(
-            {
-                "units": "percent",
-                "long_name": "Relative humidity",
-                "standard_name": "relative_humidity",
-            }
-        )
-
-    if "wind_speed_avg" in ds.data_vars:
-        ds["wind_speed_avg"].attrs.update(
-            {
-                "units": "m s-1",
-                "long_name": "Average wind speed",
-                "standard_name": "wind_speed",
-            }
-        )
-
-    if "wind_speed_peak" in ds.data_vars:
-        ds["wind_speed_peak"].attrs.update(
-            {
-                "units": "m s-1",
-                "long_name": "Peak wind speed (2 second)",
-                "standard_name": "wind_speed_of_gust",
-            }
-        )
+    for name, attributes in MEASUREMENT_ATTRS.items():
+        if name in ds.data_vars:
+            ds[name].attrs.update(attributes)
+    if "wind_speed_max" in ds.data_vars:
+        ds["wind_speed_max"].attrs["method"] = PACE_WIND_SPEED_MAX_METHOD
 
 
 def apply_wind_direction_correction(
@@ -1419,7 +1513,7 @@ def apply_wind_direction_correction(
         return ds
 
     # Create a copy to avoid modifying original
-    ds = ds.copy()
+    ds = ds.copy(deep=True)
 
     # Iterate over each sensor_idx
     for idx in ds.sensor_idx.values:
@@ -1433,15 +1527,9 @@ def apply_wind_direction_correction(
         # Get site_id for this sensor
         site_id = ds.site_id.sel(sensor_idx=idx).values.item()
 
-        # Check if offset exists for this site (case-insensitive)
+        # Missing deployment offsets are zero: this still normalizes directions.
         site_id_lower = str(site_id).lower()
-        if site_id_lower not in offsets:
-            logger.info(
-                f"Site {site_id} (sensor_idx={idx}): No wind direction offset specified, skipping"
-            )
-            continue
-
-        offset = offsets[site_id_lower]
+        offset = offsets.get(site_id_lower, 0.0)
 
         # Calculate initial statistics (skipna=True)
         initial_median = float(wind_dir.median(skipna=True).values)
@@ -1484,6 +1572,7 @@ def mask_wind_direction_by_speed(
     wind_speed_threshold: float = 1.0,
     wind_speed_var: str = "wind_speed_avg",
     wind_direction_var: str = "wind_direction",
+    sensor_types: tuple[str, ...] = ("pace",),
     logger: Optional[logging.Logger] = None,
 ) -> xr.Dataset:
     """Mask wind direction values where wind speed is below threshold.
@@ -1492,7 +1581,7 @@ def mask_wind_direction_by_speed(
     sensor limitations and flow variability. This function sets wind direction
     to NaN where wind speed is below a specified threshold (default: 1.0 m/s).
 
-    This function handles the case where PACE data splits wind_direction and
+    This function applies to the requested meteorological sensor types. It handles the case where PACE data splits wind_direction and
     wind_speed_avg into separate sensor_idx entries (e.g., EM54054_2m_wind_direction
     and EM54054_2m_wind_speed_avg as separate sensors). It matches sensors by
     finding corresponding speed sensors for each direction sensor based on site_id.
@@ -1507,6 +1596,9 @@ def mask_wind_direction_by_speed(
         Name of wind speed variable (default: 'wind_speed_avg')
     wind_direction_var : str, optional
         Name of wind direction variable (default: 'wind_direction')
+    sensor_types : tuple of str, optional
+        Sensor types whose directions should be masked. Defaults to ``("pace",)``
+        for backwards-compatible PACE-only behavior.
     logger : logging.Logger, optional
         Logger for diagnostic output
 
@@ -1527,8 +1619,23 @@ def mask_wind_direction_by_speed(
     if wind_speed_var not in ds.data_vars:
         raise ValueError(f"Variable '{wind_speed_var}' not found in dataset")
 
-    # Create a copy to avoid modifying original
-    ds = ds.copy()
+    # Create a copy to avoid modifying the caller's dataset.
+    ds = ds.copy(deep=True)
+
+    if "sensor_type" not in ds.coords:
+        if logger:
+            logger.warning(
+                "Wind direction masking requires a sensor_type coordinate; skipping masking"
+            )
+        return ds
+
+    requested_types = {sensor_type.casefold() for sensor_type in sensor_types}
+    if not requested_types:
+        raise ValueError("sensor_types must contain at least one sensor type")
+
+    def is_requested_sensor(sensor_idx):
+        sensor_type = str(ds["sensor_type"].sel(sensor_idx=sensor_idx).item())
+        return sensor_type.casefold() in requested_types
 
     # Track total statistics across all sensors
     total_masked = 0
@@ -1538,6 +1645,8 @@ def mask_wind_direction_by_speed(
     # Build a mapping of site_id -> sensor_idx for sensors with wind_speed data
     speed_sensor_map = {}
     for idx in ds.sensor_idx.values:
+        if not is_requested_sensor(idx):
+            continue
         wind_speed = ds[wind_speed_var].sel(sensor_idx=idx)
         if (~wind_speed.isnull()).sum() > 0:  # Has wind speed data
             site_id = str(ds.site_id.sel(sensor_idx=idx).values.item())
@@ -1545,6 +1654,8 @@ def mask_wind_direction_by_speed(
 
     # Iterate over each sensor_idx to find sensors with wind_direction
     for idx in ds.sensor_idx.values:
+        if not is_requested_sensor(idx):
+            continue
         wind_dir = ds[wind_direction_var].sel(sensor_idx=idx)
 
         # Skip this sensor if wind_direction is all NaN (no wind data)
@@ -1606,16 +1717,21 @@ def mask_wind_direction_by_speed(
         else:
             logger.info("No wind direction sensors found with valid data")
 
-    # Update wind_direction attributes to document masking
-    ds[wind_direction_var].attrs.update(
-        {
-            "wind_speed_masking_applied": "true",
-            "wind_speed_threshold_m_s": wind_speed_threshold,
-            "wind_speed_source_variable": wind_speed_var,
-            "masking_description": f"Wind direction masked to NaN where {wind_speed_var} < {wind_speed_threshold} m/s",
-            "masking_date": pd.Timestamp.now().strftime("%Y-%m-%d"),
-        }
-    )
+    if n_sensors_masked:
+        # Only wind direction is modified. Wind speed remains unchanged.
+        ds[wind_direction_var].attrs.update(
+            {
+                "wind_speed_masking_applied": "true",
+                "wind_speed_threshold_m_s": wind_speed_threshold,
+                "wind_speed_source_variable": wind_speed_var,
+                "wind_speed_masking_sensor_type": ",".join(sorted(requested_types)),
+                "masking_description": (
+                    "Meteorological-station wind direction masked to NaN where "
+                    f"{wind_speed_var} < {wind_speed_threshold} m/s"
+                ),
+                "masking_date": pd.Timestamp.now().strftime("%Y-%m-%d"),
+            }
+        )
 
     return ds
 
@@ -1646,7 +1762,7 @@ def _process_single_pace_file(
     dir_out: Path,
     convert_to_local_tz: bool,
     utc_offset_hours: float,
-    deployment_metadata_path: Optional[Path] = None,
+    manifest: Optional[DeploymentManifest] = None,
     year: Optional[int] = None,
 ):
     """Process a single Pace logger file and save as NetCDF."""
@@ -1667,23 +1783,18 @@ def _process_single_pace_file(
         raise ValueError("year is required when processing a Pace logger file")
     ds = _create_pace_dataset(df, metadata, file_path, year)
 
-    # Populate spatial metadata if deployment metadata is provided
-    if deployment_metadata_path and deployment_metadata_path.exists():
-        ds = _populate_spatial_metadata(ds, deployment_metadata_path, year)
+    record = manifest.lookup(metadata["serial_number"]) if manifest else None
+    if record is None:
+        _logger.warning(
+            "Pace logger %s is not in the deployment manifest; retaining filename-derived metadata.",
+            metadata["serial_number"],
+        )
+    else:
+        ds = apply_record_metadata(ds, record, include_configuration=False)
+        ds = apply_record_deployment_mask(ds, record)
 
-    # Apply wind-direction correction here. Deployment masking is intentionally
-    # deferred to step 04, after both Pace and pendant data use the same local
-    # datetime coordinate. Masking this UTC dataset here previously produced a
-    # one-timezone discrepancy with pendant data.
-    if deployment_metadata_path and deployment_metadata_path.exists():
-        from jiflr.utils import get_wind_dir_offsets
-
-        offsets = get_wind_dir_offsets(deployment_metadata_path, year)
-        if offsets:
-            _logger.info("Applying wind direction corrections...")
-            ds = apply_wind_direction_correction(ds, offsets, _logger)
-        else:
-            _logger.info("No wind direction offsets found in deployment metadata")
+    offsets = manifest.wind_direction_offsets() if manifest else {}
+    ds = apply_wind_direction_correction(ds, offsets, _logger)
 
     # Create an inspection plot while each logger's original channels are still
     # separate. Later pipeline stages merge Pace and pendant sensors by site.
@@ -1721,7 +1832,8 @@ def merge_sites(
     Parameters
     ----------
     site_datasets : dict[str, xr.Dataset]
-        Mapping of source site names to datasets, e.g. {"G03a": ds_a, "G03b": ds_b}
+        Mapping of source labels to datasets, such as logger serials for
+        colocated sensors at one site.
     target_site_id : str
         Site ID for merged result, e.g. "G03"
     join : str
@@ -1862,6 +1974,45 @@ def merge_sites(
     return merged_ds
 
 
+_COLOCATED_METADATA_COORDINATES = ("year", "site_type", "processing_group")
+
+
+def _colocated_sensor_metadata(sensor_ds: xr.DataArray) -> dict[str, object]:
+    """Return metadata that must survive a colocated-site merge."""
+    missing = [
+        coordinate
+        for coordinate in _COLOCATED_METADATA_COORDINATES
+        if coordinate not in sensor_ds.coords
+    ]
+    if missing:
+        raise ValueError(
+            "Colocated-site merge requires source sensor metadata coordinates: "
+            f"{missing}"
+        )
+    return {
+        coordinate: sensor_ds[coordinate].item()
+        for coordinate in _COLOCATED_METADATA_COORDINATES
+    }
+
+
+def _shared_colocated_sensor_metadata(sensors: list[dict]) -> dict[str, object]:
+    """Return shared metadata and reject incompatible colocated sensors."""
+    metadata = _colocated_sensor_metadata(sensors[0]["dataset"])
+    for sensor in sensors[1:]:
+        candidate = _colocated_sensor_metadata(sensor["dataset"])
+        mismatched = [
+            coordinate
+            for coordinate in _COLOCATED_METADATA_COORDINATES
+            if candidate[coordinate] != metadata[coordinate]
+        ]
+        if mismatched:
+            raise ValueError(
+                "Cannot average colocated sensors with conflicting metadata "
+                f"coordinates: {mismatched}"
+            )
+    return metadata
+
+
 def _create_single_sensor_dataset(
     sensor_ds: xr.DataArray, target_site_id: str
 ) -> xr.Dataset:
@@ -1883,6 +2034,7 @@ def _create_single_sensor_dataset(
     if "datetime_utc" not in sensor_ds.coords:
         raise ValueError("Sensor dataset does not have a datetime_utc coordinate")
     datetime_coord = "datetime_utc"
+    metadata = _colocated_sensor_metadata(sensor_ds)
 
     # Build data variables
     data_vars = {}
@@ -1963,8 +2115,137 @@ def _create_single_sensor_dataset(
             ],
         ),
     }
+    coords.update(
+        {
+            coordinate: ("sensor_idx", [value])
+            for coordinate, value in metadata.items()
+        }
+    )
 
     return xr.Dataset(data_vars, coords=coords)
+
+
+RM_YOUNG_COLUMNS = {
+    "WindSpeed_ms_WVc(1)": ("wind_speed_avg", "m s-1", "Mean horizontal wind speed"),
+    "WindSpeed_ms_WVc(2)": ("wind_direction", "degrees", "Unit-vector mean wind direction"),
+    "WindSpeed_ms_WVc(3)": ("wind_direction_std", "degrees", "Standard deviation of wind direction"),
+    "WindSpeed_ms_Max": ("wind_speed_max", "m s-1", "Maximum wind speed during output interval"),
+    "WindSpeed_ms_Std": ("wind_speed_std", "m s-1", "Standard deviation of wind speed"),
+    "Temperature_C_Avg": ("temp_c", "degrees_Celsius", "Air temperature"),
+    "Temperature_C_Std": ("temp_c_std", "degrees_Celsius", "Standard deviation of air temperature"),
+    "RelHumidity_pct_Avg": ("relative_humidity", "%", "Relative humidity"),
+    "RelHumidity_pct_Std": ("relative_humidity_std", "%", "Standard deviation of relative humidity"),
+    "Pressure_hPa_Avg": ("pressure", "hPa", "Atmospheric pressure"),
+    "Pressure_hPa_Std": ("pressure_std", "hPa", "Standard deviation of atmospheric pressure"),
+    "RainTips": ("rain_tips", "count", "Rain-gauge tips during output interval"),
+    "Rainfall_mm": ("rainfall_mm", "mm", "Rainfall during output interval"),
+    "LoggerTemp_C_Avg": ("logger_temp_c", "degrees_Celsius", "Datalogger temperature"),
+    "BattV": ("battery_voltage", "V", "Datalogger battery voltage"),
+    "WindStatusCode": ("wind_status_code", "1", "RM Young wind status code"),
+    "StatusCode": ("status_code", "1", "Datalogger status code"),
+}
+
+
+def clean_rmyoung_loggers(
+    raw_dir: Path,
+    dir_out: Path,
+    deployment_manifest_path: Path,
+    year: int,
+) -> list[Path]:
+    """Convert Campbell TOA5 R. M. Young Weather tables to intermediate NetCDF.
+
+    Raw timestamps are Alaska local time and are converted to timezone-naive
+    UTC in ``datetime_utc``.  Each Weather table must identify a CR350 serial
+    that appears exactly once in the deployment manifest.
+    """
+    raw_dir = Path(raw_dir)
+    dir_out = Path(dir_out)
+    manifest = load_deployment_manifest(deployment_manifest_path)
+    weather_files = sorted(raw_dir.glob("*/*_Weather.dat"))
+    if not weather_files:
+        raise FileNotFoundError(f"No RM Young Weather tables found below {raw_dir}")
+    dir_out.mkdir(parents=True, exist_ok=True)
+
+    outputs = []
+    for weather_file in weather_files:
+        header = pd.read_csv(weather_file, header=None, nrows=1).iloc[0]
+        if len(header) < 4 or str(header.iloc[0]) != "TOA5":
+            raise ValueError(f"{weather_file} is not a Campbell TOA5 table")
+        logger_serial = str(header.iloc[3]).strip()
+        record = manifest.lookup(logger_serial)
+        if record is None:
+            raise ValueError(f"No deployment-manifest record for RM Young logger {logger_serial}")
+        if record.instrument_type != "rmyoung_logger":
+            raise ValueError(
+                f"Manifest serial {logger_serial} has instrument_type {record.instrument_type!r}, "
+                "expected 'rmyoung_logger'"
+            )
+
+        frame = pd.read_csv(weather_file, skiprows=[0, 2, 3], na_values=["NAN"])
+        required = {"TIMESTAMP", "WindSpeed_ms_TMx", *RM_YOUNG_COLUMNS}
+        missing = sorted(required.difference(frame.columns))
+        if missing:
+            raise ValueError(f"{weather_file} is missing expected columns: {missing}")
+        local_time = pd.to_datetime(frame["TIMESTAMP"], errors="raise")
+        if local_time.dt.tz is not None:
+            raise ValueError(f"RM Young timestamps must be timezone-naive local timestamps: {weather_file}")
+        if not local_time.is_monotonic_increasing or local_time.duplicated().any():
+            raise ValueError(f"RM Young timestamps must be strictly increasing and unique: {weather_file}")
+        datetime_utc = local_time.dt.tz_localize(ZoneInfo("America/Anchorage")).dt.tz_convert("UTC").dt.tz_localize(None)
+
+        sensors = list(RM_YOUNG_COLUMNS.values())
+        n_sensors = len(sensors)
+        n_times = len(frame)
+        data_vars = {}
+        for index, (raw_name, (name, units, long_name)) in enumerate(RM_YOUNG_COLUMNS.items()):
+            values = pd.to_numeric(frame[raw_name], errors="raise").to_numpy(dtype=float)
+            channel = np.full((n_sensors, n_times), np.nan)
+            channel[index] = values
+            attrs = {"units": units, "long_name": long_name}
+            if name == "wind_speed_max":
+                attrs["method"] = RM_YOUNG_WIND_SPEED_MAX_METHOD
+            data_vars[name] = (("sensor_idx", "datetime_utc"), channel, attrs)
+        max_time_local = pd.to_datetime(frame["WindSpeed_ms_TMx"], errors="raise")
+        data_vars["wind_speed_max_time"] = (
+            ("datetime_utc",),
+            max_time_local.dt.tz_localize(ZoneInfo("America/Anchorage")).dt.tz_convert("UTC").dt.tz_localize(None).to_numpy(),
+            {"long_name": "Timestamp of maximum wind speed during output interval", "timezone": "UTC"},
+        )
+        names = [name for name, _, _ in sensors]
+        ds = xr.Dataset(
+            data_vars,
+            coords={
+                "sensor_idx": np.arange(n_sensors),
+                "datetime_utc": datetime_utc,
+                "site_id": ("sensor_idx", [record.site_id] * n_sensors),
+                "year": ("sensor_idx", [year] * n_sensors),
+                "height": ("sensor_idx", [record.height] * n_sensors),
+                "shielding": ("sensor_idx", [record.shielding or "unknown"] * n_sensors),
+                "sensor_type": ("sensor_idx", ["rmyoung"] * n_sensors),
+                "sensor_generation": ("sensor_idx", ["rmyoung_logger"] * n_sensors),
+                "sensor_id": ("sensor_idx", [f"{logger_serial}_{name}" for name in names]),
+            },
+            attrs={
+                "sensor_type": "R. M. Young ResponseONE-Pro weather transmitter",
+                "logger_serial": logger_serial,
+                "source": str(weather_file),
+                "raw_timestamp_timezone": "America/Anchorage",
+                "time_coordinate": "datetime_utc",
+                "time_coverage_timezone": "UTC",
+                "structure": "sensor_idx x datetime_utc",
+            },
+        )
+        ds = apply_record_metadata(ds, record, include_configuration=False)
+        ds = apply_record_deployment_mask(ds, record)
+        ds["datetime_utc"].attrs.update({"standard_name": "time", "axis": "T", "timezone": "UTC"})
+        output_path = dir_out / f"{logger_serial}_{record.site_id}.nc"
+        ds.to_netcdf(output_path)
+        from jiflr.qc_plots import create_pace_qc_plot, create_rmyoung_wind_qc_plot
+
+        create_pace_qc_plot(ds, dir_out, record.site_id, logger_name="R. M. Young")
+        create_rmyoung_wind_qc_plot(ds, dir_out, record.site_id)
+        outputs.append(output_path)
+    return outputs
 
 
 def _log_sensor_correlation(sensors: list) -> None:
@@ -2092,6 +2373,7 @@ def _average_sensors_at_height(
 
     # Get metadata from first sensor (they should be similar)
     first_sensor_ds = sensors[0]["dataset"]
+    metadata = _shared_colocated_sensor_metadata(sensors)
 
     coords = {
         "sensor_idx": [0],
@@ -2148,5 +2430,11 @@ def _average_sensors_at_height(
             ],
         ),
     }
+    coords.update(
+        {
+            coordinate: ("sensor_idx", [value])
+            for coordinate, value in metadata.items()
+        }
+    )
 
     return xr.Dataset(data_vars, coords=coords)

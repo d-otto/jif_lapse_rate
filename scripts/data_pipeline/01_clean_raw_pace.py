@@ -23,16 +23,16 @@ def main():
     args = parser.parse_args()
     year = args.year
     # Set up logging (appends to pipeline log if running as part of pipeline)
-    logger = setup_pipeline_logging(step_number=1, total_steps=7, mode="a")
+    logger = setup_pipeline_logging(step_number=1, total_steps=8, mode="a")
 
     # Define paths using ROOT from jiflr
     raw_data_dir = ROOT / "data" / str(year) / "raw" / "pace"
     output_dir = ROOT / "data" / str(year) / "intermediate" / "pace"
-    deployment_metadata_path = ROOT / "data" / str(year) / "metadata" / "deployment_periods.csv"
+    manifest_path = ROOT / "data" / str(year) / "metadata" / "deployment_manifest.csv"
 
     logger.info(key_value("Input directory", str(raw_data_dir)))
     logger.info(key_value("Output directory", str(output_dir)))
-    logger.info(key_value("Deployment metadata", str(deployment_metadata_path)))
+    logger.info(key_value("Deployment manifest", str(manifest_path)))
 
     # Create output directory if it doesn't exist
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -57,7 +57,7 @@ def main():
             pace_files,
             output_dir,
             convert_to_local_tz=False,
-            deployment_metadata_path=deployment_metadata_path,
+            manifest_path=manifest_path,
             year=year,
         )
 

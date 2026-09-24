@@ -28,25 +28,32 @@ import cmocean as cmo
 
 from jiflr import ROOT
 from jiflr.data import load_all_pendant_data
+from jiflr.deployment_manifest import (
+    DeploymentManifest,
+    apply_manifest_deployment_mask,
+    load_deployment_manifest,
+)
 from jiflr.logging import indent, key_value, setup_pipeline_logging, subheader
 from jiflr.pipeline import merge_sites
-from jiflr.utils import apply_deployment_mask, get_deployment_periods
+from jiflr.qc_plots import to_anchorage_time
 
 
 # =============================================================================
 # USER CONFIGURATION
 # =============================================================================
-# Configuration for merging colocated sites
-# Maps target site_id -> list of source site_ids to merge
-# Set to empty dict {} to disable colocated site merging
-COLOCATED_SITES = {
-    "G03": ["G03A", "G03B"],
+# Hard-coded exception: average the two matching 1 m G03 pendants in 2025.
+# Other sensors, including both 2 m B01 generations, remain separate.
+# Keys are (year, canonical site_id); values are the exact logger serials.
+SITE_SENSOR_AVERAGES = {
+    (2025, "G03"): ("10568620", "10383462"),
 }
 
-# Join method for merging colocated sites:
-#   "inner": only overlapping time period (no NaN gaps)
-#   "outer": union of all time periods (NaN-filled gaps)
-COLOCATED_MERGE_JOIN = "inner"
+# Old site labels are accepted only as generated output names to remove after
+# the canonical site file is saved. By-sensor inputs must use the new manifest.
+LEGACY_SITE_ALIASES = {
+    (2025, "G03"): ("G03a", "G03b"),
+    (2026, "B01"): ("B01a", "B01b"),
+}
 # =============================================================================
 
 
@@ -60,9 +67,8 @@ def merge_site_data(site_data_dict):
     Parameters
     ----------
     site_data_dict : dict
-        Dictionary with sensor height as keys and sensor info as values
+        Dictionary with logger serials as keys and sensor info as values
         (output from load_all_pendant_data for a single site)
-        Note: deployment masks should already be applied during data loading
         Note: All input datasets MUST already have sensor_idx structure
 
     Returns
@@ -123,6 +129,98 @@ def merge_site_data(site_data_dict):
     )
 
     return combined_ds
+
+
+def merge_configured_site_sensors(
+    site_name: str,
+    site_data_dict: dict,
+    manifest: DeploymentManifest,
+    year: int,
+) -> xr.Dataset:
+    """Apply an explicit same-height average after masking each logger."""
+    serials_to_average = SITE_SENSOR_AVERAGES[(year, site_name)]
+    if len(serials_to_average) < 2 or len(set(serials_to_average)) != len(serials_to_average):
+        raise ValueError(f"Invalid sensor average configured for {year} {site_name}")
+
+    actual_serials = set(site_data_dict)
+    missing_serials = set(serials_to_average) - actual_serials
+    if missing_serials:
+        raise ValueError(
+            f"Cannot average {year} {site_name}: missing logger serials "
+            f"{sorted(missing_serials)}"
+        )
+
+    heights_by_serial = {}
+    for serial, sensor_info in site_data_dict.items():
+        ds = sensor_info["dataset"]
+        if ds.sizes.get("sensor_idx") != 1:
+            raise ValueError(f"Expected one sensor for logger {serial} at {year} {site_name}")
+        if str(ds["sensor_id"].item()) != serial or str(ds["site_id"].item()) != site_name:
+            raise ValueError(f"Sensor metadata does not match {year} {site_name} logger {serial}")
+        heights_by_serial[serial] = str(ds["height"].item())
+
+    averaged_heights = {heights_by_serial[serial] for serial in serials_to_average}
+    if len(averaged_heights) != 1:
+        raise ValueError(f"Cannot average {year} {site_name}: logger heights differ")
+    average_height = averaged_heights.pop()
+    serials_at_height = {
+        serial for serial, height in heights_by_serial.items() if height == average_height
+    }
+    if serials_at_height != set(serials_to_average):
+        raise ValueError(
+            f"Cannot average {year} {site_name} at {average_height}: "
+            f"found logger serials {sorted(serials_at_height)}"
+        )
+
+    for coordinate in ("sensor_type", "sensor_generation", "shielding"):
+        values = {
+            str(site_data_dict[serial]["dataset"][coordinate].item())
+            for serial in serials_to_average
+        }
+        if len(values) != 1:
+            raise ValueError(
+                f"Cannot average {year} {site_name}: {coordinate} differs across loggers"
+            )
+
+    for height in set(heights_by_serial.values()) - {average_height}:
+        serials = [serial for serial, value in heights_by_serial.items() if value == height]
+        if len(serials) > 1:
+            raise ValueError(
+                f"No average configured for {year} {site_name} at {height}: {serials}"
+            )
+
+    ordered_serials = [
+        *serials_to_average,
+        *sorted(actual_serials - set(serials_to_average)),
+    ]
+    masked_datasets = {
+        serial: apply_manifest_deployment_mask(
+            site_data_dict[serial]["dataset"], manifest
+        )
+        for serial in ordered_serials
+    }
+    return merge_sites(masked_datasets, site_name, join="inner")
+
+
+def remove_legacy_site_outputs(
+    output_dir: Path, year: int, site_name: str, logger
+) -> None:
+    """Remove obsolete by-site files only after saving their replacement."""
+    aliases = {
+        alias.casefold()
+        for alias in LEGACY_SITE_ALIASES.get((year, site_name), ())
+    }
+    if not aliases:
+        return
+
+    for directory, suffix in ((output_dir, ".nc"), (output_dir / "qc_plots", "_qc.png")):
+        if not directory.exists():
+            continue
+        for path in directory.iterdir():
+            name = path.name.removesuffix(suffix)
+            if path.name.endswith(suffix) and name.casefold() in aliases:
+                path.unlink()
+                logger.info(indent(f"Removed obsolete site output: {path.name}", level=2))
 
 
 def _extract_height_from_sensor(ds, height_key):
@@ -212,6 +310,19 @@ def _deployment_time_mask(time_values, deployment_periods):
     return mask
 
 
+def _histogram_bins(values, bin_width):
+    """Return fixed-width histogram bins spanning all finite values."""
+    finite_values = np.asarray(values)[np.isfinite(values)]
+    if finite_values.size == 0:
+        raise ValueError("Cannot create histogram bins without finite values")
+
+    lower = np.floor(finite_values.min() / bin_width) * bin_width
+    upper = np.ceil(finite_values.max() / bin_width) * bin_width
+    if lower == upper:
+        upper += bin_width
+    return np.arange(lower, upper + bin_width * 0.5, bin_width)
+
+
 def _add_qc_readout(
     deployment_ax,
     statistics_ax,
@@ -285,8 +396,7 @@ def create_qc_plots(
     output_dir,
     deployment_periods=None,
     logger=None,
-    csv_deployment_path=None,
-    year=None,
+    histogram_ds=None,
 ):
     """
     Create quality control plots for a merged site dataset.
@@ -299,10 +409,14 @@ def create_qc_plots(
         Name of the site for plot titles and filename
     output_dir : Path
         Directory to save QC plots
-    deployment_periods : pandas.DataFrame, optional
-        DataFrame containing deployment period information for shading
+    deployment_periods : dict, optional
+        Optional precomputed UTC intervals keyed by site ID for shading.
     logger : logging.Logger, optional
         Logger instance for output
+    histogram_ds : xarray.Dataset, optional
+        Dataset with non-deployment observations masked. When provided, its
+        temperature data are used for the distribution plots while the time
+        series continues to show all source observations.
     """
     # Ensure QC plots directory exists
     qc_plots_dir = output_dir / "qc_plots"
@@ -315,8 +429,16 @@ def create_qc_plots(
     if "temp_c" not in combined_ds.data_vars:
         raise ValueError(f"Site {site_name} has no temp_c data for QC plotting")
 
-    time_values = combined_ds["datetime_utc"].values
+    utc_time_values = combined_ds["datetime_utc"].values
+    time_values = to_anchorage_time(utc_time_values)
     temp_data = combined_ds["temp_c"]
+    histogram_temp_data = (
+        histogram_ds["temp_c"] if histogram_ds is not None else temp_data
+    )
+    if histogram_temp_data.shape != temp_data.shape:
+        raise ValueError(
+            "Histogram dataset temp_c must have the same shape as the QC dataset"
+        )
 
     # Get sensor metadata from coordinates
     n_sensors = len(combined_ds.sensor_idx)
@@ -345,27 +467,15 @@ def create_qc_plots(
                 "shielding": shielding,
                 "sensor_id": sensor_id,
                 "index": i,
-                "label": f"{height} ({shielding})",
+                "label": f"{height} ({shielding}; {sensor_id})",
             }
         )
 
-    # Deployment periods are used to shade data excluded by the deployment mask.
+    # Optional deployment periods are used only for QC shading. Processing
+    # itself uses the per-instrument manifest below.
     site_deployment_periods = []
     if deployment_periods is not None:
-        try:
-            if csv_deployment_path is None or year is None:
-                raise ValueError(
-                    "csv_deployment_path and year are required for QC deployment shading"
-                )
-            site_deployment_periods = get_deployment_periods(
-                site_name, csv_deployment_path, year
-            ).get(site_name, [])
-        except Exception as e:
-            if logger:
-                logger.warning(
-                    f"Could not load deployment periods for {site_name}: {e}"
-                )
-            site_deployment_periods = []
+        site_deployment_periods = deployment_periods.get(site_name, [])
 
     sensor_values = [
         temp_data.isel(sensor_idx=sensor["index"]).values
@@ -375,48 +485,61 @@ def create_qc_plots(
         raise ValueError(
             f"Site {site_name} has no finite temperature values for QC plotting"
         )
+    plotted_time_mask = np.any(np.isfinite(np.asarray(sensor_values)), axis=0)
+    plotted_time_values = time_values[plotted_time_mask]
+    time_limits = (plotted_time_values[0], plotted_time_values[-1])
 
     colors = _sensor_colors(n_sensors)
     fig = plt.figure(
-        figsize=(16, max(10.5, 8.5 + 0.35 * n_sensors)),
+        figsize=(16, max(12, 10 + 0.35 * n_sensors)),
         dpi=200,
         layout="constrained",
     )
     fig.suptitle(f"Temperature QC — Site {site_name}", fontsize=16, fontweight="bold")
     grid = fig.add_gridspec(
-        3,
+        4,
         2,
-        height_ratios=[2.5, 1.25, max(1.25, 0.25 * n_sensors)],
+        height_ratios=[2.5, 1.25, 1.25, max(1.25, 0.25 * n_sensors)],
     )
     ax_series = fig.add_subplot(grid[0, :])
     ax_difference = fig.add_subplot(grid[1, :], sharex=ax_series)
     ax_histogram = fig.add_subplot(grid[2, 0])
-    details_grid = grid[2, 1].subgridspec(1, 2, wspace=0.18)
+    ax_difference_histogram = fig.add_subplot(grid[2, 1])
+    details_grid = grid[3, :].subgridspec(1, 2, wspace=0.18)
     ax_deployment = fig.add_subplot(details_grid[0, 0])
     ax_statistics = fig.add_subplot(details_grid[0, 1])
 
     masked_intervals = (
-        _masked_deployment_intervals(time_values, site_deployment_periods)
+        _masked_deployment_intervals(utc_time_values, site_deployment_periods)
         if site_deployment_periods
         else []
     )
     for i, (start, end) in enumerate(masked_intervals):
         ax_series.axvspan(
-            start,
-            end,
+            to_anchorage_time([start])[0],
+            to_anchorage_time([end])[0],
             color="0.5",
             alpha=0.2,
             label="Masked outside deployment" if i == 0 else None,
             zorder=0,
         )
 
-    for sensor, values, color in zip(sensor_info, sensor_values, colors):
+    for sensor, color in zip(sensor_info, colors):
+        sensor_data = temp_data.isel(sensor_idx=sensor["index"]).dropna(
+            dim="datetime_utc"
+        )
         ax_series.plot(
-            time_values, values, color=color, label=sensor["label"], linewidth=0.65
+            to_anchorage_time(sensor_data["datetime_utc"].values),
+            sensor_data.values,
+            color=color,
+            label=sensor["label"],
+            linewidth=0.65,
         )
     ax_series.axhline(0, color="0.15", linewidth=1.5, zorder=1)
     ax_series.set(
-        title="Temperature time series", xlabel="Date (UTC)", ylabel="Temperature (°C)"
+        title="Temperature time series",
+        xlabel="Date (Alaska time)",
+        ylabel="Temperature (°C)",
     )
     ax_series.grid(True, alpha=0.25)
     ax_series.legend(
@@ -426,16 +549,21 @@ def create_qc_plots(
     ax_series.xaxis.set_major_locator(mdates.DayLocator(interval=2))
     plt.setp(ax_series.xaxis.get_majorticklabels(), rotation=45, ha="right")
 
-    deployment_mask = _deployment_time_mask(time_values, site_deployment_periods)
+    deployment_mask = _deployment_time_mask(utc_time_values, site_deployment_periods)
+    histogram_sensor_values = [
+        histogram_temp_data.isel(sensor_idx=sensor["index"]).values
+        for sensor in sensor_info
+    ]
     valid_values = [
-        values[deployment_mask & np.isfinite(values)] for values in sensor_values
+        values[deployment_mask & np.isfinite(values)]
+        for values in histogram_sensor_values
     ]
     if not any(values.size for values in valid_values):
         raise ValueError(
             f"Site {site_name} has no finite temperatures during deployment periods"
-        )
+    )
     all_values = np.concatenate([values for values in valid_values if values.size])
-    bins = np.histogram_bin_edges(all_values, bins="auto")
+    bins = _histogram_bins(all_values, bin_width=0.25)
     for values, color in zip(valid_values, colors):
         if values.size:
             ax_histogram.hist(
@@ -475,22 +603,18 @@ def create_qc_plots(
         ]
         for height in (1.0, 2.0)
     }
-    if height_indices[1.0] and height_indices[2.0]:
-        one_m_values = temp_data.isel(sensor_idx=height_indices[1.0]).values
-        two_m_values = temp_data.isel(sensor_idx=height_indices[2.0]).values
-        overlapping_times = np.isfinite(one_m_values).any(axis=0) & np.isfinite(
-            two_m_values
-        ).any(axis=0)
+    one_to_one_height_comparison = all(
+        len(height_indices[height]) == 1 for height in (1.0, 2.0)
+    )
+    if one_to_one_height_comparison:
+        one_m = temp_data.isel(sensor_idx=height_indices[1.0][0]).values
+        two_m = temp_data.isel(sensor_idx=height_indices[2.0][0]).values
+        difference_values = two_m - one_m
+        overlapping_times = np.isfinite(difference_values)
         if overlapping_times.any():
-            one_m = np.nanmean(
-                one_m_values[:, overlapping_times], axis=0
-            )
-            two_m = np.nanmean(
-                two_m_values[:, overlapping_times], axis=0
-            )
             ax_difference.plot(
                 time_values[overlapping_times],
-                two_m - one_m,
+                difference_values[overlapping_times],
                 color=cmo.cm.balance(0.2),
                 linewidth=0.65,
             )
@@ -507,7 +631,7 @@ def create_qc_plots(
         ax_difference.text(
             0.5,
             0.5,
-            "Requires both 1 m and 2 m sensors",
+            "Requires one sensor at 1 m and one at 2 m",
             ha="center",
             va="center",
             transform=ax_difference.transAxes,
@@ -515,13 +639,76 @@ def create_qc_plots(
     ax_difference.axhline(0, color="0.15", linewidth=1.5, zorder=0)
     ax_difference.set(
         title="2 m − 1 m temperature difference",
-        xlabel="Date (UTC)",
+        xlabel="Date (Alaska time)",
         ylabel="Difference (°C)",
     )
     ax_difference.grid(True, alpha=0.25)
     ax_difference.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
     ax_difference.xaxis.set_major_locator(mdates.DayLocator(interval=2))
     plt.setp(ax_difference.xaxis.get_majorticklabels(), rotation=45, ha="right")
+    ax_series.set_xlim(time_limits)
+
+    if one_to_one_height_comparison:
+        deployment_one_m = histogram_temp_data.isel(
+            sensor_idx=height_indices[1.0][0]
+        ).values
+        deployment_two_m = histogram_temp_data.isel(
+            sensor_idx=height_indices[2.0][0]
+        ).values
+        deployment_difference = deployment_two_m - deployment_one_m
+        deployment_difference = deployment_difference[
+            deployment_mask & np.isfinite(deployment_difference)
+        ]
+        if deployment_difference.size:
+            ax_difference_histogram.hist(
+                deployment_difference,
+                bins=_histogram_bins(deployment_difference, bin_width=0.1),
+                density=True,
+                color=cmo.cm.balance(0.2),
+                alpha=0.8,
+            )
+            ax_difference_histogram.axvline(
+                np.mean(deployment_difference),
+                color="0.2",
+                linestyle="-",
+                linewidth=1,
+                label="Mean",
+            )
+            ax_difference_histogram.axvline(
+                np.median(deployment_difference),
+                color="0.2",
+                linestyle="--",
+                linewidth=1,
+                label="Median",
+            )
+            ax_difference_histogram.legend(
+                loc="upper left", fontsize=7, framealpha=0.9
+            )
+        else:
+            ax_difference_histogram.text(
+                0.5,
+                0.5,
+                "No overlapping 1 m and 2 m deployment observations",
+                ha="center",
+                va="center",
+                transform=ax_difference_histogram.transAxes,
+            )
+    else:
+        ax_difference_histogram.text(
+            0.5,
+            0.5,
+            "Requires one sensor at 1 m and one at 2 m",
+            ha="center",
+            va="center",
+            transform=ax_difference_histogram.transAxes,
+        )
+    ax_difference_histogram.axvline(0, color="0.15", linewidth=1.5, zorder=0)
+    ax_difference_histogram.set(
+        title="2 m − 1 m difference distribution",
+        xlabel="Difference (°C)",
+        ylabel="Density",
+    )
+    ax_difference_histogram.grid(True, axis="y", alpha=0.25)
 
     _add_qc_readout(
         ax_deployment,
@@ -529,7 +716,7 @@ def create_qc_plots(
         site_name,
         time_values,
         sensor_info,
-        [values[deployment_mask] for values in sensor_values],
+        [values[deployment_mask] for values in histogram_sensor_values],
         site_deployment_periods,
     )
 
@@ -542,7 +729,13 @@ def create_qc_plots(
         logger.info(indent(f"QC plot saved: {output_file.name}", level=2))
 
 
-def process_directory(input_dir, output_dir, csv_deployment_path, year, logger):
+def process_directory(
+    input_dir: Path,
+    output_dir: Path,
+    manifest: DeploymentManifest,
+    year: int,
+    logger,
+):
     """
     Process all NetCDF files in a directory and merge by site.
 
@@ -552,26 +745,18 @@ def process_directory(input_dir, output_dir, csv_deployment_path, year, logger):
         Input directory containing individual sensor NetCDF files
     output_dir : Path
         Output directory for combined site files
-    csv_deployment_path : Path
-        Path to deployment periods CSV
+    manifest : DeploymentManifest
+        Per-season deployment metadata used to mask each individual sensor.
     logger : logging.Logger
         Logger instance
     """
     logger.info(subheader(f"Processing: {input_dir.name}"))
 
-    # Load deployment periods CSV for QC plotting
-    deployment_periods = None
-    if csv_deployment_path.exists():
-        try:
-            deployment_periods = pd.read_csv(csv_deployment_path)
-        except Exception as e:
-            logger.warning(f"Could not load deployment periods CSV: {e}")
-
     # Generate QC plots immediately before deployment masking is applied.
     site_data = load_all_pendant_data(
         processed_dir=input_dir,
-        csv_deployment_path=csv_deployment_path,
         year=year,
+        manifest=manifest,
         use_csv_masking=True,
         required_heights=None,  # Load all available heights
         drop_events=True,
@@ -580,6 +765,19 @@ def process_directory(input_dir, output_dir, csv_deployment_path, year, logger):
     )
 
     logger.info(f"Found {len(site_data)} sites")
+
+    legacy_input_names = {
+        alias.casefold()
+        for (rule_year, _), aliases in LEGACY_SITE_ALIASES.items()
+        if rule_year == year
+        for alias in aliases
+    }
+    stale_sites = [name for name in site_data if name.casefold() in legacy_input_names]
+    if stale_sites:
+        raise ValueError(
+            f"By-sensor data still uses obsolete site IDs {sorted(stale_sites)}; "
+            "regenerate pendant by-sensor data from the updated deployment manifest"
+        )
 
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -594,34 +792,28 @@ def process_directory(input_dir, output_dir, csv_deployment_path, year, logger):
             logger.warning(indent(f"No valid data for site {site_name}", level=2))
             continue
 
-        # Show observations that the following deployment-mask operation removes.
+        deployment_combined_ds = apply_manifest_deployment_mask(
+            pre_mask_combined_ds, manifest
+        )
+
+        # Show observations that the deployment-mask operation removes while
+        # calculating distribution plots from deployment observations only.
         create_qc_plots(
             pre_mask_combined_ds,
             site_name,
             output_dir,
-            deployment_periods,
+            None,
             logger,
-            csv_deployment_path=csv_deployment_path,
-            year=year,
+            histogram_ds=deployment_combined_ds,
         )
 
-        try:
-            combined_ds = apply_deployment_mask(
-                pre_mask_combined_ds,
-                site_name,
-                csv_deployment_path,
-                year,
-                ignore_missing=True,
+        if (year, site_name) in SITE_SENSOR_AVERAGES:
+            combined_ds = merge_configured_site_sensors(
+                site_name, sensors, manifest, year
             )
-        except Exception as error:
-            logger.warning(
-                indent(
-                    f"Could not apply deployment mask for {site_name}: {error}. "
-                    "Saving unmasked data.",
-                    level=2,
-                )
-            )
-            combined_ds = pre_mask_combined_ds
+            create_qc_plots(combined_ds, site_name, output_dir, logger=logger)
+        else:
+            combined_ds = deployment_combined_ds
 
         # Create output filename
         output_file = output_dir / f"{site_name}.nc"
@@ -629,6 +821,7 @@ def process_directory(input_dir, output_dir, csv_deployment_path, year, logger):
         # Save combined dataset
         combined_ds.to_netcdf(output_file)
         logger.info(indent(f"Saved: {output_file.name}", level=2))
+        remove_legacy_site_outputs(output_dir, year, site_name, logger)
 
         # Print summary
         n_sensors = (
@@ -660,26 +853,24 @@ def main():
     args = parser.parse_args()
     year = args.year
     # Set up logging (appends to pipeline log if running as part of pipeline)
-    logger = setup_pipeline_logging(step_number=3, total_steps=7, mode="a")
+    logger = setup_pipeline_logging(step_number=4, total_steps=8, mode="a")
 
     # Define paths
     base_dir = Path(ROOT) / "data" / str(year) / "intermediate" / "pendants"
     input_base = base_dir / "by_sensor"
     output_base = base_dir / "by_site"
-    csv_deployment_path = (
-        Path(ROOT) / "data" / str(year) / "metadata" / "deployment_periods.csv"
-    )
+    manifest_path = Path(ROOT) / "data" / str(year) / "metadata" / "deployment_manifest.csv"
+    manifest = load_deployment_manifest(manifest_path)
 
     logger.info(key_value("Input base directory", str(input_base)))
     logger.info(key_value("Output base directory", str(output_base)))
-    logger.info(key_value("Deployment CSV", str(csv_deployment_path)))
-    logger.info(key_value("CSV exists", str(csv_deployment_path.exists())))
+    logger.info(key_value("Deployment manifest", str(manifest_path)))
 
     # Process main directory
     main_input = input_base
     main_output = output_base
 
-    process_directory(main_input, main_output, csv_deployment_path, year, logger)
+    process_directory(main_input, main_output, manifest, year, logger)
 
     # Process subdirectories
     # TODO: Make this procedural
@@ -690,94 +881,9 @@ def main():
         subdir_output = output_base / subdir
 
         if subdir_input.exists() and any(subdir_input.glob("*.nc")):
-            process_directory(subdir_input, subdir_output, csv_deployment_path, year, logger)
+            process_directory(subdir_input, subdir_output, manifest, year, logger)
         else:
             logger.info(f"Skipping {subdir} subdirectory (not found or empty)")
-
-    # Process colocated site merges if configured.
-    # Runs after all subdirectories are processed so source files are present.
-    if COLOCATED_SITES:
-        # Load deployment periods CSV for QC plotting
-        deployment_periods = None
-        if csv_deployment_path.exists():
-            try:
-                deployment_periods = pd.read_csv(csv_deployment_path)
-            except Exception as e:
-                logger.warning(f"Could not load deployment periods CSV: {e}")
-
-        for target_site, source_sites in COLOCATED_SITES.items():
-            logger.info(
-                subheader(
-                    f"Merging colocated sites: {', '.join(source_sites)} -> {target_site}"
-                )
-            )
-
-            # Search output_base and all subdirs for source files
-            site_datasets = {}
-            site_paths = {}
-            for source_site in source_sites:
-                for candidate in output_base.rglob(f"{source_site}.nc"):
-                    site_datasets[source_site] = xr.open_dataset(candidate)
-                    site_paths[source_site] = candidate
-                    logger.info(
-                        indent(f"Loaded {source_site} from {candidate.relative_to(output_base)}", level=1)
-                    )
-                    break
-                else:
-                    logger.warning(
-                        indent(f"Source file not found: {source_site}.nc", level=1)
-                    )
-
-            if len(site_datasets) >= 2:
-                # All source files must be in the same directory; use that as output dir
-                source_dirs = {p.parent for p in site_paths.values()}
-                if len(source_dirs) > 1:
-                    logger.warning(
-                        f"Source files for {target_site} are in different directories: {source_dirs}. Using first."
-                    )
-                output_dir = next(iter(source_dirs))
-
-                # Merge sites
-                merged_ds = merge_sites(
-                    site_datasets, target_site, join=COLOCATED_MERGE_JOIN
-                )
-
-                # Close source datasets before deleting
-                for ds in site_datasets.values():
-                    ds.close()
-
-                # Save merged dataset
-                output_path = output_dir / f"{target_site}.nc"
-                merged_ds.to_netcdf(output_path)
-                logger.info(
-                    indent(f"Saved merged dataset: {output_path.name}", level=1)
-                )
-
-                # Delete source files
-                for source_site, source_path in site_paths.items():
-                    if source_path.exists():
-                        source_path.unlink()
-                        logger.info(
-                            indent(f"Removed source file: {source_path.name}", level=1)
-                        )
-
-                    # Also remove source QC plots
-                    source_qc = source_path.parent / "qc_plots" / f"{source_site}_qc.png"
-                    if source_qc.exists():
-                        source_qc.unlink()
-                        logger.info(
-                            indent(f"Removed source QC plot: {source_qc.name}", level=1)
-                        )
-
-                # Create QC plot for merged site
-                create_qc_plots(
-                    merged_ds, target_site, output_dir, deployment_periods, logger,
-                    csv_deployment_path=csv_deployment_path, year=year,
-                )
-            else:
-                logger.warning(
-                    f"Not enough source datasets found for {target_site} merge (need >= 2, got {len(site_datasets)})"
-                )
 
 
 if __name__ == "__main__":

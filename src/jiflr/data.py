@@ -19,7 +19,10 @@ from tqdm import tqdm
 import warnings
 
 from jiflr import ROOT
-from jiflr.utils import get_deployment_periods, apply_deployment_mask
+from jiflr.deployment_manifest import (
+    DeploymentManifest,
+    apply_manifest_deployment_mask,
+)
 
 
 # Site groupings for analysis
@@ -138,7 +141,9 @@ def unstack_sensor_idx(
     ds : xr.Dataset
         xarray Dataset with sensor_idx dimension
     coords : list of str, optional
-        Coordinate names to use for multi-index (default: ['site_id', 'height', 'shielding'])
+        Coordinate names to use for multi-index (default: year, site_id,
+        height, shielding, sensor_type). Include sensor_generation or sensor_id
+        when a site has distinct sensors with otherwise identical metadata.
     fill_value : float, optional
         Value to use for missing combinations (default: NaN)
     sparse : bool, optional
@@ -158,6 +163,10 @@ def unstack_sensor_idx(
     Unstack with custom coordinates:
     >>> unstacked = unstack_sensor_idx(ds, coords=['site_id', 'height'])
     >>> temp_data = unstacked.temp_c.sel(site_id='A01', height='2m')
+
+    Keep both B01 2 m sensor generations separate:
+    >>> coords = ['year', 'site_id', 'height', 'shielding', 'sensor_type', 'sensor_generation']
+    >>> unstacked = unstack_sensor_idx(ds, coords=coords)
     """
     if coords is None:
         coords = ["year", "site_id", "height", "shielding", "sensor_type"]
@@ -177,7 +186,9 @@ def unstack_sensor_idx(
                 raise ValueError(
                     f"Variable '{var}' has real data in multiple rows with the same "
                     f"sensor_idx key. These are true duplicates that cannot be safely "
-                    f"collapsed:\n{has_data.where(conflicts).dropna('sensor_idx')}"
+                    f"collapsed. Include sensor_generation or sensor_id in coords "
+                    f"when those distinguish the sensors:\n"
+                    f"{has_data.where(conflicts).dropna('sensor_idx')}"
                 )
 
     ds_deduped = ds_indexed.groupby("sensor_idx").mean(skipna=True)
@@ -304,8 +315,8 @@ def _load_netcdf(nc_file: Path) -> Optional[Dict[str, Any]]:
 
 def load_all_pendant_data(
     processed_dir: Path,
-    csv_deployment_path: Path,
     year: int,
+    manifest: Optional[DeploymentManifest] = None,
     use_csv_masking: bool = True,
     required_heights: Optional[List[str]] = None,
     drop_events: bool = True,
@@ -313,16 +324,17 @@ def load_all_pendant_data(
     apply_mask_to_data: bool = False,
 ) -> Dict[str, Dict[str, Dict]]:
     """
-    Load all NetCDF files organized by site and sensor height.
+    Load all NetCDF files organized by site and logger serial number.
 
     Parameters
     ----------
     processed_dir : Path
         Directory containing processed NetCDF files
-    csv_deployment_path : Path
-        Path to deployment_periods.csv
+    manifest : DeploymentManifest, optional
+        Deployment metadata for this season. Required only when
+        ``apply_mask_to_data`` is True.
     use_csv_masking : bool
-        Whether to apply CSV-based deployment masking
+        Whether to apply deployment masking when requested.
     required_heights : list of str, optional
         If provided, only load sensors at these heights (e.g., ['1m', '2m'])
     drop_events : bool, optional
@@ -336,12 +348,12 @@ def load_all_pendant_data(
     Returns
     -------
     dict
-        Nested dictionary: {site_name: {height: sensor_info_dict}}
+        Nested dictionary: {site_name: {logger_serial: sensor_info_dict}}
 
     Example
     -------
-    >>> site_data = load_all_pendant_data(processed_dir, csv_path)
-    >>> site_data['A01']['2m']['dataset']  # Access 2m sensor at A01
+    >>> site_data = load_all_pendant_data(processed_dir, year=2026)
+    >>> site_data['A01']['22133634']['dataset']  # Access a sensor by serial
     """
     netcdf_files = list(processed_dir.glob("*.nc"))
     site_data = {}
@@ -360,20 +372,12 @@ def load_all_pendant_data(
             continue
 
         # Apply deployment masking if requested
-        if use_csv_masking and apply_mask_to_data and site_name != "Unknown":
-            try:
-                sensor_info["dataset"] = apply_deployment_mask(
-                    sensor_info["dataset"],
-                    site_name,
-                    csv_deployment_path,
-                    year,
-                    ignore_missing=True,
-                )
-            except Exception as e:
-                warnings.warn(
-                    f"Failed to apply deployment mask for site {site_name}: {e}. "
-                    "Returning unmasked data."
-                )
+        if use_csv_masking and apply_mask_to_data:
+            if manifest is None:
+                raise ValueError("manifest is required when apply_mask_to_data is True")
+            sensor_info["dataset"] = apply_manifest_deployment_mask(
+                sensor_info["dataset"], manifest
+            )
 
         # Create site key
         if site_name == "Unknown":
@@ -397,12 +401,15 @@ def load_all_pendant_data(
             if "intensity_lux" in ds.data_vars:
                 sensor_info["dataset"] = ds.drop_vars("intensity_lux")
 
-        # Create combined key to distinguish sensors at same height with different shielding
-        ds = sensor_info["dataset"]
-        shielding = ds.shielding.values[0] if "shielding" in ds.coords else "unknown"
-        combined_key = f"{sensor_height}_{shielding}" if sensor_height else shielding
-
-        site_data[site_key][combined_key] = sensor_info
+        # Serial number is the sensor identity. Height and shielding are
+        # descriptive metadata and can legitimately be shared by replicates.
+        sensor_key = str(sensor_info["sensor_id"])
+        if sensor_key in site_data[site_key]:
+            raise ValueError(
+                f"Duplicate pendant serial {sensor_key!r} for site {site_key!r}; "
+                f"cannot choose one dataset to retain."
+            )
+        site_data[site_key][sensor_key] = sensor_info
 
     return site_data
 
@@ -898,30 +905,30 @@ def replace_utc_datetime_coord(
 
 
 def load_and_merge_lvl0_data(
-    lvl0_main_path: Optional[Path] = None,
-    lvl0_intensive_path: Optional[Path] = None,
+    lvl0_on_ice_standard_path: Optional[Path] = None,
+    lvl0_on_ice_intensive_path: Optional[Path] = None,
     time_slice: Optional[slice] = None,
     drop_conflicting_sites: bool = True,
 ) -> xr.Dataset:
     """
-    Load and merge lvl0_main and lvl0_combined_intensive NetCDF files.
+    Load and merge the on-ice standard and intensive Level 0 NetCDF files.
 
-    This function loads both level 0 processed datasets and merges them into a single
-    xarray Dataset with consistent dimensions. The main dataset contains regular
-    monitoring sites with pendant sensors, while the intensive dataset contains
-    fewer sites but with additional meteorological variables from pace loggers.
+    This function loads both Level 0 processed datasets and merges them into a
+    single xarray Dataset with consistent dimensions. The standard dataset
+    contains regular on-ice monitoring sites, while the intensive dataset
+    contains intensive sites with additional meteorological variables.
 
     Parameters
     ----------
-    lvl0_main_path : Path, optional
-        Path to lvl0_main.nc file. If None, uses default project path.
-    lvl0_intensive_path : Path, optional
-        Path to lvl0_combined_intensive.nc file. If None, uses default project path.
+    lvl0_on_ice_standard_path : Path, optional
+        Path to lvl0_on_ice_standard.nc. If None, uses the default project path.
+    lvl0_on_ice_intensive_path : Path, optional
+        Path to lvl0_on_ice_intensive.nc. If None, uses the default project path.
     time_slice : slice, optional
         Time slice to apply to both datasets for memory efficiency.
     drop_conflicting_sites : bool, optional
         If True, removes sites that appear in both datasets to avoid conflicts.
-        Keeps the intensive version when conflicts occur (default: True).
+        Keeps the on-ice intensive version when conflicts occur (default: True).
 
     Returns
     -------
@@ -952,30 +959,36 @@ def load_and_merge_lvl0_data(
     """
 
     # Set default paths if not provided
-    if lvl0_main_path is None:
-        lvl0_main_path = Path(ROOT) / "data/2025/processed/lvl0/lvl0_main.nc"
-    if lvl0_intensive_path is None:
-        lvl0_intensive_path = (
-            Path(ROOT) / "data/2025/processed/lvl0/lvl0_combined_intensive.nc"
+    if lvl0_on_ice_standard_path is None:
+        lvl0_on_ice_standard_path = (
+            Path(ROOT) / "data/2025/processed/lvl0/lvl0_on_ice_standard.nc"
+        )
+    if lvl0_on_ice_intensive_path is None:
+        lvl0_on_ice_intensive_path = (
+            Path(ROOT) / "data/2025/processed/lvl0/lvl0_on_ice_intensive.nc"
         )
 
     # Check that files exist
-    if not lvl0_main_path.exists():
-        raise FileNotFoundError(f"Main dataset not found: {lvl0_main_path}")
-    if not lvl0_intensive_path.exists():
-        raise FileNotFoundError(f"Intensive dataset not found: {lvl0_intensive_path}")
+    if not lvl0_on_ice_standard_path.exists():
+        raise FileNotFoundError(
+            f"On-ice standard dataset not found: {lvl0_on_ice_standard_path}"
+        )
+    if not lvl0_on_ice_intensive_path.exists():
+        raise FileNotFoundError(
+            f"On-ice intensive dataset not found: {lvl0_on_ice_intensive_path}"
+        )
 
     # Load datasets
-    print(f"Loading main dataset: {lvl0_main_path}")
-    ds_main = xr.open_dataset(lvl0_main_path)
+    print(f"Loading on-ice standard dataset: {lvl0_on_ice_standard_path}")
+    ds_standard = xr.open_dataset(lvl0_on_ice_standard_path)
 
-    print(f"Loading intensive dataset: {lvl0_intensive_path}")
-    ds_intensive = xr.open_dataset(lvl0_intensive_path)
+    print(f"Loading on-ice intensive dataset: {lvl0_on_ice_intensive_path}")
+    ds_intensive = xr.open_dataset(lvl0_on_ice_intensive_path)
 
     # Apply time slice if provided
     if time_slice is not None:
         print(f"Applying time slice: {time_slice}")
-        ds_main = ds_main.sel(datetime_utc=time_slice)
+        ds_standard = ds_standard.sel(datetime_utc=time_slice)
         ds_intensive = ds_intensive.sel(datetime_utc=time_slice)
 
     # Harmonize coordinate names and structures
@@ -986,48 +999,51 @@ def load_and_merge_lvl0_data(
         ds_intensive = ds_intensive.rename({"shielded": "shielding"})
 
     # Handle overlapping sites
-    main_sites = set(ds_main.site_id.values)
+    standard_sites = set(ds_standard.site_id.values)
     intensive_sites = set(ds_intensive.site_id.values)
-    overlapping_sites = main_sites.intersection(intensive_sites)
+    overlapping_sites = standard_sites.intersection(intensive_sites)
 
     if overlapping_sites and drop_conflicting_sites:
-        print(f"Removing overlapping sites from main dataset: {overlapping_sites}")
-        # Keep only non-overlapping sites in main dataset
-        non_overlapping_main_sites = [
-            site for site in ds_main.site_id.values if site not in overlapping_sites
+        print(f"Removing overlapping sites from on-ice standard dataset: {overlapping_sites}")
+        # Keep only non-overlapping sites in the on-ice standard dataset.
+        non_overlapping_standard_sites = [
+            site for site in ds_standard.site_id.values if site not in overlapping_sites
         ]
-        if non_overlapping_main_sites:
-            ds_main = ds_main.sel(site_id=non_overlapping_main_sites)
+        if non_overlapping_standard_sites:
+            ds_standard = ds_standard.sel(site_id=non_overlapping_standard_sites)
         else:
-            # If all main sites overlap, create empty dataset with same structure
-            ds_main = ds_main.isel(site_id=slice(0, 0))
+            # If all standard sites overlap, keep an empty dataset with the same structure.
+            ds_standard = ds_standard.isel(site_id=slice(0, 0))
 
     # With the new sensor_idx structure, merging is much simpler
     # Both datasets should now have dimensions: (sensor_idx, datetime_utc)
     # Sensor attributes are stored as coordinates indexed by sensor_idx
 
     # The datasets can be concatenated directly along the sensor_idx dimension
-    ds_main_modified = ds_main.copy()
+    ds_standard_modified = ds_standard.copy()
     ds_intensive_modified = ds_intensive.copy()
 
     # Find common time period
-    time_main = pd.to_datetime(ds_main_modified.datetime_utc.values)
+    time_standard = pd.to_datetime(ds_standard_modified.datetime_utc.values)
     time_intensive = pd.to_datetime(ds_intensive_modified.datetime_utc.values)
 
     # Convert UTC datetime coordinates to comparable format
-    if hasattr(ds_main_modified.datetime_utc, "values"):
-        time_main_range = (time_main.min(), time_main.max())
+    if hasattr(ds_standard_modified.datetime_utc, "values"):
+        time_standard_range = (time_standard.min(), time_standard.max())
     if hasattr(ds_intensive_modified.datetime_utc, "values"):
         time_intensive_range = (time_intensive.min(), time_intensive.max())
 
-    print(f"Main dataset time range: {time_main_range[0]} to {time_main_range[1]}")
     print(
-        f"Intensive dataset time range: {time_intensive_range[0]} to {time_intensive_range[1]}"
+        f"On-ice standard dataset time range: {time_standard_range[0]} to {time_standard_range[1]}"
+    )
+    print(
+        "On-ice intensive dataset time range: "
+        f"{time_intensive_range[0]} to {time_intensive_range[1]}"
     )
 
     # Find overlapping time period
-    overlap_start = max(time_main_range[0], time_intensive_range[0])
-    overlap_end = min(time_main_range[1], time_intensive_range[1])
+    overlap_start = max(time_standard_range[0], time_intensive_range[0])
+    overlap_end = min(time_standard_range[1], time_intensive_range[1])
 
     if overlap_start >= overlap_end:
         warnings.warn("No overlapping time period found between datasets")
@@ -1040,7 +1056,7 @@ def load_and_merge_lvl0_data(
     try:
         # With sensor_idx structure, simply concatenate along the sensor_idx dimension
         merged_ds = xr.concat(
-            [ds_main_modified, ds_intensive_modified],
+            [ds_standard_modified, ds_intensive_modified],
             dim="sensor_idx",
             data_vars="all",
             coords="all",
@@ -1049,12 +1065,12 @@ def load_and_merge_lvl0_data(
         # Add metadata about the merge
         merged_ds.attrs.update(
             {
-                "merged_from": "lvl0_main.nc and lvl0_combined_intensive.nc",
+                "merged_from": "lvl0_on_ice_standard.nc and lvl0_on_ice_intensive.nc",
                 "merge_timestamp": pd.Timestamp.now().isoformat(),
-                "n_main_sensors": len(ds_main.sensor_idx)
-                if len(ds_main.sensor_idx) > 0
+                "n_on_ice_standard_sensors": len(ds_standard.sensor_idx)
+                if len(ds_standard.sensor_idx) > 0
                 else 0,
-                "n_intensive_sensors": len(ds_intensive.sensor_idx),
+                "n_on_ice_intensive_sensors": len(ds_intensive.sensor_idx),
                 "total_sensors": len(merged_ds.sensor_idx),
                 "overlapping_sites_removed": list(overlapping_sites)
                 if drop_conflicting_sites
@@ -1066,9 +1082,10 @@ def load_and_merge_lvl0_data(
 
         print(f"Successfully merged datasets:")
         print(
-            f"  - Main dataset sensors: {len(ds_main.sensor_idx) if len(ds_main.sensor_idx) > 0 else 0}"
+            "  - On-ice standard dataset sensors: "
+            f"{len(ds_standard.sensor_idx) if len(ds_standard.sensor_idx) > 0 else 0}"
         )
-        print(f"  - Intensive dataset sensors: {len(ds_intensive.sensor_idx)}")
+        print(f"  - On-ice intensive dataset sensors: {len(ds_intensive.sensor_idx)}")
         print(f"  - Total merged sensors: {len(merged_ds.sensor_idx)}")
         print(f"  - Data variables: {list(merged_ds.data_vars.keys())}")
 

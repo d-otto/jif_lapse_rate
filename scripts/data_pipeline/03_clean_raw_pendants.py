@@ -27,8 +27,7 @@ def main(
     output_base_dir: Union[str, Path],
     year: str = "2025",
     force: bool = False,
-    data_inventory_path: Union[str, Path, None] = None,
-    deployment_metadata_path: Union[str, Path, None] = None,
+    manifest_path: Union[str, Path, None] = None,
 ) -> None:
     """
     Process raw HOBO pendant CSV files to NetCDF format.
@@ -50,10 +49,8 @@ def main(
     force : bool, optional
         If True, reprocess all files even if outputs already exist. Currently not
         implemented but reserved for future use (default: False).
-    data_inventory_path : Union[str, Path, None], optional
-        Path to data inventory Excel file containing shielding information (default: None).
-    deployment_metadata_path : Union[str, Path, None], optional
-        Path to deployment_periods.csv file containing site elevations and coordinates (default: None).
+    manifest_path : Union[str, Path, None], optional
+        Path to the per-season machine-readable deployment manifest.
 
     Returns
     -------
@@ -67,23 +64,19 @@ def main(
     'output_base_dir/site2/' respectively.
     """
     # Set up logging (appends to pipeline log if running as part of pipeline)
-    logger = setup_pipeline_logging(step_number=2, total_steps=7, mode="a")
+    logger = setup_pipeline_logging(step_number=3, total_steps=8, mode="a")
 
     # Convert paths to Path objects
     raw_dir = Path(raw_dir)
     output_base_dir = Path(output_base_dir)
-    if data_inventory_path:
-        data_inventory_path = Path(data_inventory_path)
-    if deployment_metadata_path:
-        deployment_metadata_path = Path(deployment_metadata_path)
+    if manifest_path:
+        manifest_path = Path(manifest_path)
 
     logger.info(key_value("Year", year))
     logger.info(key_value("Raw export directory", str(raw_dir)))
     logger.info(key_value("Output base directory", str(output_base_dir)))
-    if data_inventory_path:
-        logger.info(key_value("Data inventory", str(data_inventory_path)))
-    if deployment_metadata_path:
-        logger.info(key_value("Deployment metadata", str(deployment_metadata_path)))
+    if manifest_path:
+        logger.info(key_value("Deployment manifest", str(manifest_path)))
 
     # Find all subdirectories plus the root directory
     subdirs = [d for d in raw_dir.rglob("*") if d.is_dir()]
@@ -117,22 +110,17 @@ def main(
 
         total_csv_files += len(csv_files)
 
-        logger.info("Retaining UTC timestamps")
-
         clean_hobo_pendants(
             csv_files,
             output_dir,
-            data_inventory_path=data_inventory_path,
-            deployment_metadata_path=deployment_metadata_path,
+            manifest_path=manifest_path,
             year=int(year),
         )
 
         # Count output files
         nc_files = sorted(output_dir.glob("*.nc"))
         output_location = (
-            output_dir.relative_to(output_base_dir)
-            if rel_path != Path(".")
-            else "root"
+            output_dir.relative_to(output_base_dir) if rel_path != Path(".") else "root"
         )
         logger.info(f"Created {len(nc_files)} NetCDF files in UTC in {output_location}")
 
@@ -151,8 +139,12 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Clean pendant data for one field season")
-    parser.add_argument("--year", required=True, type=int, help="Field season to process")
+    parser = argparse.ArgumentParser(
+        description="Clean pendant data for one field season"
+    )
+    parser.add_argument(
+        "--year", required=True, type=int, help="Field season to process"
+    )
     args = parser.parse_args()
     year = args.year
 
@@ -161,9 +153,8 @@ if __name__ == "__main__":
     output_base_dir = (
         Path(ROOT) / "data" / str(year) / "intermediate" / "pendants" / "by_sensor"
     )
-    data_inventory_path = Path(ROOT) / "data" / str(year) / "metadata" / "data_inventory.xlsx"
-    deployment_metadata_path = (
-        Path(ROOT) / "data" / str(year) / "metadata" / "deployment_periods.csv"
+    manifest_path = (
+        Path(ROOT) / "data" / str(year) / "metadata" / "deployment_manifest.csv"
     )
 
     main(
@@ -171,6 +162,5 @@ if __name__ == "__main__":
         output_base_dir,
         year=str(year),
         force=True,
-        data_inventory_path=data_inventory_path,
-        deployment_metadata_path=deployment_metadata_path,
+        manifest_path=manifest_path,
     )

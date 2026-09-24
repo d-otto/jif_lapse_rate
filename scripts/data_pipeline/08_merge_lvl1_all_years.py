@@ -23,7 +23,7 @@ def main() -> None:
     args = parser.parse_args()
     years = sorted(set(args.years))
 
-    logger = setup_pipeline_logging(step_number=7, total_steps=7, mode="a")
+    logger = setup_pipeline_logging(step_number=8, total_steps=8, mode="a")
     logger.info(key_value("Years", ", ".join(str(year) for year in years)))
     logger.info(key_value("Output directory", str(ROOT / "data" / "all_years" / "processed" / "lvl1")))
 

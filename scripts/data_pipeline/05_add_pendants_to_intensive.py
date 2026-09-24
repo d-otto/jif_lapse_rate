@@ -28,14 +28,14 @@ from typing import Dict, List
 
 from jiflr import ROOT
 from jiflr.logging import indent, key_value, setup_pipeline_logging, subheader
-from jiflr.utils import get_deployment_periods, apply_deployment_mask
+from jiflr.pipeline import create_netcdf_encoding
+from jiflr.netcdf_metadata import MEASUREMENT_ATTRS, apply_product_metadata, wind_speed_max_method
+from jiflr.qc_plots import create_all_qc_plots
 
 
 def load_pace_data(
     pace_dir: Path,
     logger,
-    csv_deployment_path: Path = None,
-    year: int = None,
 ) -> Dict[str, xr.Dataset]:
     """
     Load all pace data files from the intermediate/pace directory.
@@ -46,10 +46,6 @@ def load_pace_data(
         Directory containing pace NetCDF files
     logger : logging.Logger
         Logger instance
-    csv_deployment_path : Path, optional
-        Path to deployment_periods.csv for applying deployment masking.
-        If provided, data will be filtered to deployment periods only.
-
     Returns
     -------
     Dict[str, xr.Dataset]
@@ -93,35 +89,6 @@ def load_pace_data(
                 )
                 continue
 
-            # Apply deployment masking on the canonical UTC coordinate.
-            if csv_deployment_path and csv_deployment_path.exists():
-                # Get site_id from the first sensor (all sensors in file share same site)
-                site_id = str(ds.site_id.values[0]) if 'site_id' in ds.coords else site_name
-
-                # Get datetime coordinate and data start time
-                if "datetime_utc" not in ds.coords:
-                    raise ValueError(
-                        f"Pace file {pace_file} does not have a datetime_utc coordinate"
-                    )
-                data_start_time = pd.Timestamp(ds["datetime_utc"].values[0])
-
-                # Check for deployment periods (use default_start so missing deploy_date falls back gracefully)
-                periods_dict = get_deployment_periods(
-                    site_id,
-                    csv_deployment_path,
-                    year,
-                    default_start=data_start_time,
-                    logger=logger,
-                )
-
-                if periods_dict.get(site_id):
-                    ds = apply_deployment_mask(
-                        ds, site_id, csv_deployment_path, year, ignore_missing=True
-                    )
-                    logger.info(indent(f"Applied deployment masking for site: {site_id}", level=2))
-                else:
-                    logger.warning(f"No deployment periods found for PACE site: {site_id}")
-
             pace_data[site_name] = ds
             logger.info(indent(f"Loaded pace data for site: {site_name}"))
 
@@ -131,6 +98,60 @@ def load_pace_data(
     return pace_data
 
 
+RM_YOUNG_LVL0_DROP_VARIABLES = {
+    "wind_direction_std",
+    "wind_speed_std",
+    "temp_c_std",
+    "relative_humidity_std",
+    "pressure_std",
+    "rain_tips",
+    "logger_temp_c",
+    "battery_voltage",
+    "wind_status_code",
+    "status_code",
+    "wind_speed_max_time",
+}
+
+
+def load_rmyoung_data(rmyoung_dir: Path, logger) -> Dict[str, xr.Dataset]:
+    """Load already-masked intermediate RM Young datasets by manifest site ID."""
+    if not rmyoung_dir.exists():
+        logger.warning(f"RM Young directory not found: {rmyoung_dir}")
+        return {}
+    datasets = {}
+    for path in sorted(rmyoung_dir.glob("*.nc")):
+        ds = xr.open_dataset(path)
+        if "site_id" not in ds.coords:
+            raise ValueError(f"RM Young file has no site_id coordinate: {path}")
+        site_ids = set(str(value) for value in ds.site_id.values)
+        if len(site_ids) != 1:
+            raise ValueError(f"RM Young file must represent exactly one site: {path}")
+        site_id = site_ids.pop()
+        if site_id in datasets:
+            raise ValueError(f"Duplicate RM Young data for site {site_id}: {path}")
+        retained = ds.drop_vars(
+            sorted(RM_YOUNG_LVL0_DROP_VARIABLES.intersection(ds.data_vars))
+        )
+        if "pressure" in retained.data_vars:
+            pressure = retained["pressure"]
+            units = pressure.attrs.get("units")
+            if units == "hPa":
+                converted = pressure / 10.0
+                converted.attrs = pressure.attrs.copy()
+                converted.attrs["units"] = "kPa"
+                retained["pressure"] = converted
+            elif units != "kPa":
+                raise ValueError(f"Unsupported RM Young pressure units {units!r}: {path}")
+        n_sensors_before_drop = retained.sizes["sensor_idx"]
+        retained = retained.dropna(dim="sensor_idx", how="all")
+        removed_rows = n_sensors_before_drop - retained.sizes["sensor_idx"]
+        if removed_rows:
+            logger.info(indent(f"Removed {removed_rows} empty RM Young diagnostic rows"))
+        datasets[site_id] = retained
+        logger.info(indent(f"Loaded RM Young data for site: {site_id}"))
+    return datasets
+
+
 def load_pendant_data(pendant_dir: Path, logger) -> Dict[str, xr.Dataset]:
     """
     Load all pendant data files from the intensive by_site directory.
@@ -138,7 +159,7 @@ def load_pendant_data(pendant_dir: Path, logger) -> Dict[str, xr.Dataset]:
     Parameters
     ----------
     pendant_dir : Path
-        Directory containing pendant NetCDF files (by_site/intensive)
+        Directory containing pendant NetCDF files (by_site/on_ice_intensive)
     logger : logging.Logger
         Logger instance
 
@@ -271,7 +292,7 @@ def map_site_names(pace_sites: List[str], pendant_sites: List[str]) -> Dict[str,
 
 
 def create_common_datetime_grid(
-    pace_data: Dict[str, xr.Dataset], pendant_data: Dict[str, xr.Dataset], logger
+    pace_data: Dict[str, xr.Dataset], rmyoung_data: Dict[str, xr.Dataset], pendant_data: Dict[str, xr.Dataset], logger
 ) -> pd.DatetimeIndex:
     """
     Create a common datetime grid that spans all data from both sources.
@@ -292,18 +313,28 @@ def create_common_datetime_grid(
     """
     all_times = []
 
-    # Collect all UTC datetime values from Pace data
-    for ds in pace_data.values():
-        times = pd.to_datetime(ds.datetime_utc.values)
-        all_times.extend(times)
-
-    # Collect all UTC datetime values from pendant data
-    for ds in pendant_data.values():
-        times = pd.to_datetime(ds.datetime_utc.values)
+    datasets = (
+        list(pace_data.values())
+        + list(rmyoung_data.values())
+        + list(pendant_data.values())
+    )
+    for ds in datasets:
+        measurements = [
+            name
+            for name in ds.data_vars
+            if name in MEASUREMENT_ATTRS and "datetime_utc" in ds[name].dims
+        ]
+        if not measurements:
+            raise ValueError(
+                "Cannot build common datetime grid: dataset has no time-indexed measurements"
+            )
+        # Deployment masking leaves empty time coordinates in the source files.
+        observed = ds.dropna(dim="datetime_utc", how="all", subset=measurements)
+        times = pd.to_datetime(observed.datetime_utc.values)
         all_times.extend(times)
 
     if not all_times:
-        raise ValueError("No datetime coordinates found in any dataset")
+        raise ValueError("No unmasked measurement times found in any dataset")
 
     # Round to nearest minute and get unique times
     all_times_rounded = [pd.Timestamp(t).round("min") for t in all_times]
@@ -318,6 +349,7 @@ def create_common_datetime_grid(
 
 def combine_datasets(
     pace_data: Dict[str, xr.Dataset],
+    rmyoung_data: Dict[str, xr.Dataset],
     pendant_data: Dict[str, xr.Dataset],
     common_datetime: pd.DatetimeIndex,
     site_mapping: Dict[str, str],
@@ -377,6 +409,13 @@ def combine_datasets(
         logger.info(indent(f"Added pace dataset for site: {standard_site} ({len(ds.sensor_idx)} sensors)"))
 
     # Add pendant datasets
+    for site_id, ds in rmyoung_data.items():
+        datetime_coord = "datetime_utc"
+        ds_reindexed = ds.reindex({datetime_coord: common_datetime}, method=None)
+        datasets_to_concat.append(ds_reindexed)
+        logger.info(indent(f"Added RM Young dataset for site: {site_id} ({len(ds.sensor_idx)} sensors)"))
+
+    # Add pendant datasets
     for pendant_site, ds in pendant_data.items():
         # Reindex to common datetime grid
         datetime_coord = "datetime_utc"
@@ -411,6 +450,13 @@ def combine_datasets(
         combined_ds = combined_ds.assign_coords(sensor_idx=new_sensor_idx)
 
     # Get unique sites for summary
+    if "wind_speed_max" in combined_ds.data_vars:
+        method = wind_speed_max_method(
+            {str(value) for value in combined_ds["sensor_type"].values}
+        )
+        if method:
+            combined_ds["wind_speed_max"].attrs["method"] = method
+
     unique_sites = sorted(set(combined_ds.site_id.values))
     n_sensors = len(combined_ds.sensor_idx)
 
@@ -421,15 +467,15 @@ def combine_datasets(
     # Add global attributes
     combined_ds.attrs.update(
         {
-            "title": "Combined JIFLR Intensive Site Data (Pace + Pendant)",
-            "source": "Combined from pace and pendant sensor data",
+            "title": "Combined JIFLR Intensive Site Data (Pace + RM Young + Pendant)",
+            "source": "Combined from Pace, RM Young, and pendant sensor data",
             "processing_step": "lvl0_combined_sensor_idx",
             "institution": "JIFLR Project",
             "structure": "sensor_idx x datetime_utc",
             "n_sensors": n_sensors,
             "n_sites": len(unique_sites),
             "site_names": ", ".join(unique_sites),
-            "sensor_type_info": "pace=unshielded meteorological station, pendant=shielded/unshielded temperature sensors",
+            "sensor_type_info": "pace and rmyoung=meteorological stations, pendant=temperature/light sensors",
             "data_conflict_resolution": "sensor_type coordinate separates pace vs pendant measurements",
             "created_by": "combine_pace_pendant_data.py",
         }
@@ -440,61 +486,82 @@ def combine_datasets(
 
 def main():
     """Main function to combine pace and pendant data."""
-    parser = argparse.ArgumentParser(description="Combine intensive Pace and pendant data")
+    parser = argparse.ArgumentParser(description="Combine intensive Pace, RM Young, and pendant data")
     parser.add_argument("--year", required=True, type=int, help="Field season to process")
     args = parser.parse_args()
     year = args.year
     # Set up logging (appends to pipeline log if running as part of pipeline)
-    logger = setup_pipeline_logging(step_number=4, total_steps=7, mode="a")
+    logger = setup_pipeline_logging(step_number=5, total_steps=8, mode="a")
 
     # Define paths
     base_dir = Path(ROOT) / "data" / str(year)
     pace_dir = base_dir / "intermediate" / "pace"
+    rmyoung_dir = base_dir / "intermediate" / "rmyoung"
     pendant_dir = base_dir / "intermediate" / "pendants" / "by_site" / "on_ice_intensive"
     output_dir = base_dir / "processed" / "lvl0"
-    csv_deployment_path = base_dir / "metadata" / "deployment_periods.csv"
 
     logger.info(key_value("Pace data directory", str(pace_dir)))
+    logger.info(key_value("RM Young data directory", str(rmyoung_dir)))
     logger.info(key_value("Pendant data directory", str(pendant_dir)))
     logger.info(key_value("Output directory", str(output_dir)))
-    logger.info(key_value("Deployment CSV", str(csv_deployment_path)))
 
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load data
     logger.info(subheader("1. Loading pace data"))
-    pace_data = load_pace_data(pace_dir, logger, csv_deployment_path, year)
+    pace_data = load_pace_data(pace_dir, logger)
 
-    logger.info(subheader("2. Loading pendant data"))
+    logger.info(subheader("2. Loading RM Young data"))
+    rmyoung_data = load_rmyoung_data(rmyoung_dir, logger)
+
+    logger.info(subheader("3. Loading pendant data"))
     pendant_data = load_pendant_data(pendant_dir, logger)
 
-    if not pace_data and not pendant_data:
-        logger.error("No data found in either pace or pendant directories")
+    if not pace_data and not rmyoung_data and not pendant_data:
+        logger.error("No data found in Pace, RM Young, or pendant directories")
         return
 
     # Create site name mapping
-    logger.info(subheader("3. Creating site name mapping"))
+    logger.info(subheader("4. Creating site name mapping"))
     pace_sites = list(pace_data.keys())
     pendant_sites = list(pendant_data.keys())
     site_mapping = map_site_names(pace_sites, pendant_sites)
     logger.info(f"Site mapping: {site_mapping}")
 
     # Create common datetime grid
-    logger.info(subheader("4. Creating common UTC datetime grid"))
-    common_datetime = create_common_datetime_grid(pace_data, pendant_data, logger)
+    logger.info(subheader("5. Creating common UTC datetime grid"))
+    common_datetime = create_common_datetime_grid(pace_data, rmyoung_data, pendant_data, logger)
 
     # Combine datasets
-    logger.info(subheader("5. Combining datasets"))
+    logger.info(subheader("6. Combining datasets"))
     combined_ds = combine_datasets(
-        pace_data, pendant_data, common_datetime, site_mapping, year, logger
+        pace_data, rmyoung_data, pendant_data, common_datetime, site_mapping, year, logger
+    )
+    combined_ds = apply_product_metadata(
+        combined_ds, level="lvl0", product="on_ice_intensive"
     )
 
     # Save combined dataset
-    output_file = output_dir / "lvl0_intensive.nc"
-    logger.info(subheader("6. Saving combined dataset"))
+    output_file = output_dir / "lvl0_on_ice_intensive.nc"
+    logger.info(subheader("7. Saving combined dataset"))
     logger.info(key_value("Output file", str(output_file)))
-    combined_ds.to_netcdf(output_file)
+    encoding = create_netcdf_encoding(combined_ds)
+    encoding["datetime_utc"] = {
+        "dtype": "int64",
+        "units": f"minutes since {common_datetime[0].isoformat()}",
+        "calendar": "proleptic_gregorian",
+    }
+    combined_ds.to_netcdf(output_file, encoding=encoding)
+
+    # Match the Level 1 QC coverage for every numeric measurement variable in
+    # the intensive Level 0 dataset.
+    create_all_qc_plots(
+        ds=combined_ds,
+        output_dir=output_dir,
+        filename_prefix=output_file.stem,
+        logger=logger,
+    )
 
     # Print summary
     logger.info(subheader("Summary"))

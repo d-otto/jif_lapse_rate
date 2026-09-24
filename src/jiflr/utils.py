@@ -534,19 +534,19 @@ def butterworth_filter(
     - For time-series with irregular sampling, resample to regular intervals first
     - Uses sosfiltfilt for zero-phase filtering (no time shift)
     - For 5-minute data (300 seconds), fs = 1/300 Hz
-    - Example: upper=1/6 with 5-min data means 6 samples = 30 minutes cutoff
+    - A 30-minute low-pass cutoff is ``upper=1/1800`` Hz
 
     Examples
     --------
     >>> # Low-pass filter: remove fluctuations faster than 30 minutes
-    >>> # For 5-minute data: fs = 1/300 Hz, upper = 1/6 samples = 30 min period
-    >>> filtered = butterworth_filter(data, fs=1/300, order=4, upper=1/6)
+    >>> # For 5-minute data: fs = 1/300 Hz and a 30-minute cutoff is 1/1800 Hz
+    >>> filtered = butterworth_filter(data, fs=1/300, order=4, upper=1/1800)
 
     >>> # High-pass filter: remove slow trends
-    >>> filtered = butterworth_filter(data, fs=1/300, order=4, lower=1/100)
+    >>> filtered = butterworth_filter(data, fs=1/300, order=4, lower=1/30000)
 
     >>> # Band-pass filter
-    >>> filtered = butterworth_filter(data, fs=1/300, order=4, lower=1/100, upper=1/6)
+    >>> filtered = butterworth_filter(data, fs=1/300, order=4, lower=1/30000, upper=1/1800)
     """
     # Validate inputs
     if lower is None and upper is None:
